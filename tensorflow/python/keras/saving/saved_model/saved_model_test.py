@@ -51,8 +51,8 @@ from tensorflow.python.keras import testing_utils
 from tensorflow.python.keras.feature_column.dense_features import DenseFeatures
 from tensorflow.python.keras.saving.saved_model import load as keras_load
 from tensorflow.python.keras.saving.saved_model import save_impl as keras_save
+from tensorflow.python.keras.utils import control_flow_util
 from tensorflow.python.keras.utils import generic_utils
-from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
@@ -75,8 +75,8 @@ class LayerWithLearningPhase(keras.engine.base_layer.Layer):
   def call(self, x, training=None):
     if training is None:
       training = keras.backend.learning_phase()
-    output = tf_utils.smart_cond(
-        training, lambda: x * 0, lambda: array_ops.identity(x))
+    output = control_flow_util.smart_cond(training, lambda: x * 0,
+                                          lambda: array_ops.identity(x))
     if not context.executing_eagerly():
       output._uses_learning_phase = True  # pylint: disable=protected-access
     return output
@@ -530,14 +530,14 @@ class TestModelSavingAndLoadingV2(keras_parameterized.TestCase):
     class LayerWithTrainingRequiredArg(keras.engine.base_layer.Layer):
 
       def call(self, inputs, training):
-        return tf_utils.smart_cond(
-            training, lambda: inputs * 0, lambda: array_ops.identity(inputs))
+        return control_flow_util.smart_cond(training, lambda: inputs * 0,
+                                            lambda: array_ops.identity(inputs))
 
     class LayerWithTrainingDefaultTrue(keras.engine.base_layer.Layer):
 
       def call(self, inputs, training=True):
-        return tf_utils.smart_cond(
-            training, lambda: inputs * 0, lambda: array_ops.identity(inputs))
+        return control_flow_util.smart_cond(training, lambda: inputs * 0,
+                                            lambda: array_ops.identity(inputs))
 
     class Model(keras.models.Model):
 
@@ -855,8 +855,7 @@ class TestModelSavingAndLoadingV2(keras_parameterized.TestCase):
 
     loaded = keras_load.load(saved_model_dir)
     self.assertAllEqual([[1.0]], self.evaluate(loaded(inp)))
-    with self.assertRaisesRegexp(ValueError,
-                                 'call function was not serialized'):
+    with self.assertRaisesRegex(ValueError, 'call function was not serialized'):
       loaded.layer(inp)
 
 
@@ -1039,8 +1038,8 @@ class MetricTest(test.TestCase, parameterized.TestCase):
 
       self.evaluate([v.initializer for v in metric.variables])
 
-      with self.assertRaisesRegexp(ValueError,
-                                   'Unable to restore custom object'):
+      with self.assertRaisesRegex(ValueError,
+                                  'Unable to restore custom object'):
         self._test_metric_save_and_load(metric, save_dir, num_tensor_args)
       with generic_utils.CustomObjectScope({'CustomMetric': CustomMetric}):
         loaded = self._test_metric_save_and_load(

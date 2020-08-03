@@ -254,14 +254,10 @@ py::object TFE_Py_ExecuteCancelable_wrapper(
 }
 
 static py::object TF_ListPhysicalDevices() {
-  tensorflow::Safe_TF_StatusPtr status = tensorflow::make_safe(TF_NewStatus());
   std::vector<string> devices;
   tensorflow::Status s =
       tensorflow::DeviceFactory::ListAllPhysicalDevices(&devices);
-  tensorflow::Set_TF_Status_from_Status(status.get(), s);
-  if (!s.ok()) {
-    return py::none();
-  }
+  MaybeRaiseRegisteredFromStatus(s);
   PyObject* result = PyList_New(devices.size());
   int i = 0;
   for (auto& dev : devices) {
@@ -734,8 +730,8 @@ PYBIND11_MODULE(_pywrap_tfe, m) {
         });
 
   // TFE_Py_ForwardAccumulator logic.
-  m.def("TFE_Py_ForwardAccumulatorNew", []() {
-    return tensorflow::PyoOrThrow(TFE_Py_ForwardAccumulatorNew());
+  m.def("TFE_Py_ForwardAccumulatorNew", [](bool use_batch) {
+    return tensorflow::PyoOrThrow(TFE_Py_ForwardAccumulatorNew(use_batch));
   });
 
   m.def("TFE_Py_ForwardAccumulatorSetAdd", [](const py::handle& accumulator) {
@@ -831,6 +827,13 @@ PYBIND11_MODULE(_pywrap_tfe, m) {
     TFE_EnableCollectiveOps(tensorflow::InputTFE_Context(ctx), buf.get()->data,
                             buf.get()->length, status.get());
     tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
+  });
+  m.def("TFE_AbortCollectiveOps", [](const py::handle& ctx, int code,
+                                     const char* message) {
+    tensorflow::Safe_TF_StatusPtr status =
+        tensorflow::make_safe(TF_NewStatus());
+    TF_SetStatus(status.get(), static_cast<TF_Code>(code), message);
+    TFE_AbortCollectiveOps(tensorflow::InputTFE_Context(ctx), status.get());
   });
   m.def("TF_ListPhysicalDevices", &tensorflow::TF_ListPhysicalDevices);
   m.def("TF_GetDeviceDetails", &tensorflow::TF_GetDeviceDetails);
@@ -1169,7 +1172,9 @@ PYBIND11_MODULE(_pywrap_tfe, m) {
 
     PyCapsule_SetName(pycapsule.ptr(), "used_dltensor");
     PyCapsule_SetDestructor(pycapsule.ptr(), nullptr);
-    return py::handle(EagerTensorFromHandle(thandle));
+
+    PyObject* pyhandle = EagerTensorFromHandle(thandle);
+    return tensorflow::PyoOrThrow(pyhandle);
   });
 
   m.def("TFE_Py_RegisterCustomDevice", [](const py::handle& context,

@@ -435,8 +435,12 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
       self._assertOpOutputMatchesExpected(
           math_ops.sign,
-          np.array([[-2.0, -1.0, -0.0, +0.0, 1.0, 2.0]], dtype=dtype),
-          expected=np.array([[-1.0, -1.0, -0.0, +0.0, 1.0, 1.0]], dtype=dtype))
+          np.array([[-2.0, -1.0, -0.0, +0.0, 1.0, 2.0,
+                     float("nan")]],
+                   dtype=dtype),
+          expected=np.array([[-1.0, -1.0, -0.0, +0.0, 1.0, 1.0,
+                              float("nan")]],
+                            dtype=dtype))
 
       self._assertOpOutputMatchesExpected(
           math_ops.is_finite,
@@ -923,16 +927,22 @@ class UnaryOpsTest(xla_test.XLATestCase):
           expected=np.array([1, 0x100000003f800000], np.uint64))
 
   def testInvertPermutation(self):
-    self._assertOpOutputMatchesExpected(
-        array_ops.invert_permutation,
-        np.array([1, 2, 0], np.int32),
-        expected=np.array([2, 0, 1], dtype=np.int32))
+    for np_dtype in [np.int32, np.int64]:
+      self._assertOpOutputMatchesExpected(
+          array_ops.invert_permutation,
+          np.array([1, 2, 0], np_dtype),
+          expected=np.array([2, 0, 1], dtype=np_dtype))
 
   def testInvertPermutationTwiceIsNoop(self):
-    self._assertOpOutputMatchesExpected(
-        lambda x: array_ops.invert_permutation(array_ops.invert_permutation(x)),
-        np.array([1, 2, 0], np.int32),
-        expected=np.array([1, 2, 0], dtype=np.int32))
+
+    def invert_twice(x):
+      return array_ops.invert_permutation(array_ops.invert_permutation(x))
+
+    for np_dtype in [np.int32, np.int64]:
+      self._assertOpOutputMatchesExpected(
+          invert_twice,
+          np.array([1, 2, 0], np_dtype),
+          expected=np.array([1, 2, 0], dtype=np_dtype))
 
   def testRank(self):
     rank_op = lambda x: array_ops.rank_internal(x, optimize=False)

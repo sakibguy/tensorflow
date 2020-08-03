@@ -75,11 +75,10 @@ mlir::LogicalResult IsValidGraph(mlir::ModuleOp module) {
 StatusOr<OwningModuleRef> LoadFromGraphdefOrMlirSource(
     const std::string& input_filename, bool input_mlir,
     bool use_splatted_constant, const std::vector<std::string>& extra_tf_opdefs,
-    absl::string_view debug_info_file, absl::string_view input_arrays,
-    absl::string_view input_dtypes, absl::string_view input_shapes,
-    absl::string_view output_arrays, bool prune_unused_nodes,
-    bool enable_upgrade_legacy, llvm::SourceMgr* source_mgr,
-    MLIRContext* context) {
+    const GraphImportConfig& specs, absl::string_view debug_info_file,
+    absl::string_view input_arrays, absl::string_view input_dtypes,
+    absl::string_view input_shapes, absl::string_view output_arrays,
+    llvm::SourceMgr* source_mgr, MLIRContext* context) {
   // Set up the input file.
   std::string error_message;
   auto file = mlir::openInputFile(input_filename, &error_message);
@@ -113,15 +112,15 @@ StatusOr<OwningModuleRef> LoadFromGraphdefOrMlirSource(
     return tensorflow::GraphdefToSplattedMlirTranslateFunction(
         file->getBuffer(), debug_info_file, input_arrays, input_dtypes,
         input_shapes, output_arrays, /*control_output_arrays=*/"",
-        prune_unused_nodes, /*convert_legacy_fed_inputs=*/true,
-        /*graph_as_function=*/false, enable_upgrade_legacy,
+        specs.prune_unused_nodes, /*convert_legacy_fed_inputs=*/true,
+        /*graph_as_function=*/false, specs.upgrade_legacy,
         /*enable_shape_inference=*/false, context);
   }
   return tensorflow::GraphdefToMlirTranslateFunction(
       file->getBuffer(), debug_info_file, input_arrays, input_dtypes,
       input_shapes, output_arrays, /*control_output_arrays=*/"",
-      prune_unused_nodes, /*convert_legacy_fed_inputs=*/true,
-      /*graph_as_function=*/false, enable_upgrade_legacy,
+      specs.prune_unused_nodes, /*convert_legacy_fed_inputs=*/true,
+      /*graph_as_function=*/false, specs.upgrade_legacy,
       /*enable_shape_inference=*/false, context);
 }
 
@@ -187,22 +186,19 @@ Status ConvertTFExecutorToTFLOrFlatbuffer(
 StatusOr<mlir::OwningModuleRef> ImportSavedModel(
     const std::string& input_filename, const int saved_model_version,
     const std::unordered_set<std::string>& tags,
-    absl::Span<std::string> exported_names, mlir::MLIRContext* context) {
+    absl::Span<std::string> exported_names, const GraphImportConfig& specs,
+    mlir::MLIRContext* context) {
   if (saved_model_version == 2) {
-    auto module = tensorflow::SavedModelObjectGraphToMlirImport(
+    auto module_or = tensorflow::SavedModelObjectGraphToMlirImport(
         input_filename, tags, exported_names, context);
-    if (!module)
-      return tensorflow::errors::InvalidArgument("fail to open input file");
-
-    return module;
+    if (!module_or.status().ok()) return module_or.status();
+    return module_or.ConsumeValueOrDie();
   } else if (saved_model_version == 1) {
-    auto module = tensorflow::SavedModelSignatureDefsToMlirImport(
-        input_filename, tags, exported_names, context);
+    auto module_or = tensorflow::SavedModelSignatureDefsToMlirImport(
+        input_filename, tags, exported_names, context, specs.upgrade_legacy);
 
-    if (!module)
-      return tensorflow::errors::InvalidArgument("fail to open input file");
-
-    return module;
+    if (!module_or.status().ok()) return module_or.status();
+    return module_or.ConsumeValueOrDie();
   } else {
     return tensorflow::errors::InvalidArgument(
         "Should be either saved model v1 or v2");

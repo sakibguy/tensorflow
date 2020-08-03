@@ -377,7 +377,7 @@ void RecordUsage(PjRtBuffer::ScopedHold device_buffer,
 // synchronization if an error occurs before the buffer is used.
 StatusOr<std::unique_ptr<PjRtBuffer>> AllocateDestinationBuffer(
     const Shape& on_host_shape, Device* device, LocalDeviceState* local_device,
-    se::Stream* copy_stream, PjRtClient* client) {
+    se::Stream* copy_stream, bool is_uninitialized_create, PjRtClient* client) {
   if (on_host_shape.IsTuple() && on_host_shape.tuple_shapes_size() == 0) {
     return InvalidArgument("Can't make a buffer from an empty tuple");
   }
@@ -390,8 +390,11 @@ StatusOr<std::unique_ptr<PjRtBuffer>> AllocateDestinationBuffer(
           on_host_shape, client->allocator(), local_device->device_ordinal()));
   if (local_device->allocation_model() ==
       LocalDeviceState::kComputeSynchronized) {
-    CHECK(copy_stream != nullptr);
-    copy_stream->ThenWaitFor(local_device->compute_stream());
+    if (copy_stream == nullptr) {
+      CHECK(is_uninitialized_create);
+    } else {
+      copy_stream->ThenWaitFor(local_device->compute_stream());
+    }
   } else {
     DCHECK(transfer_manager->CanShapedBufferBeAccessedNow(
         local_device->compute_stream()->parent(), dst_buffer));
@@ -400,13 +403,29 @@ StatusOr<std::unique_ptr<PjRtBuffer>> AllocateDestinationBuffer(
 
   absl::InlinedVector<std::shared_ptr<BufferSequencingEvent>, 2>
       definition_events;
-  // We always have at least one definition event, for the copy completing to
-  // the device buffers.
-  definition_events.emplace_back(std::make_shared<BufferSequencingEvent>());
+  if (is_uninitialized_create) {
+    // There is not going to be any copy into the buffer so in general we don't
+    // need a definition event.
+    if (local_device->allocation_model() ==
+        LocalDeviceState::kComputeSynchronized) {
+      // The allocation is not valid until the compute stream passes this point,
+      // so add a definition event in the compute stream.
+      definition_events.emplace_back(std::make_shared<BufferSequencingEvent>());
+      TF_ASSIGN_OR_RETURN(EventPool::Handle event,
+                          local_device->event_pool().ThenAllocateAndRecordEvent(
+                              local_device->compute_stream()));
+      definition_events.back()->SetSequencingEvent(
+          std::move(event), local_device->compute_stream());
+    }
+  } else {
+    // We have at least one definition event, for the copy completing to
+    // the device buffers.
+    definition_events.emplace_back(std::make_shared<BufferSequencingEvent>());
+  }
   se::Stream* tuple_table_stream = local_device->host_to_device_stream();
   if (on_device_shape.IsTuple()) {
-    // We also need to copy the tuple tables, so we'll have a second defintion
-    // event for that copy to complete.
+    // We also need to copy the tuple tables, so we'll have an additional
+    // definition event for that copy to complete.
     if (tuple_table_stream != copy_stream) {
       if (local_device->allocation_model() ==
           LocalDeviceState::kComputeSynchronized) {
@@ -431,8 +450,8 @@ StatusOr<std::unique_ptr<PjRtBuffer>> AllocateDestinationBuffer(
       StallStreamOnError(local_device, tuple_table_stream);
       return event_or.status();
     }
-    definition_events[1]->SetSequencingEvent(event_or.ConsumeValueOrDie(),
-                                             tuple_table_stream);
+    definition_events.back()->SetSequencingEvent(event_or.ConsumeValueOrDie(),
+                                                 tuple_table_stream);
   }
   std::shared_ptr<TrackedDeviceBuffer> dst_device_buffer =
       TrackedDeviceBuffer::FromScopedShapedBuffer(&dst_buffer,
@@ -452,7 +471,7 @@ StatusOr<std::unique_ptr<PjRtBuffer>> AllocateDestinationBuffer(
     // being freed. If the buffer is allocated and never used, the free will
     // take longer and this is assumed to be ok.
     RecordUsage(py_buffer->GetBufferWithUsageHold(), local_device, local_device,
-                definition_events[1], tuple_table_stream,
+                definition_events.back(), tuple_table_stream,
                 /*prefer_to_retain_reference=*/false);
   }
 
@@ -624,7 +643,8 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::FromHostBuffer(
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<PjRtBuffer> py_buffer,
       AllocateDestinationBuffer(compact_shape, device, local_device,
-                                local_device->host_to_device_stream(), client));
+                                local_device->host_to_device_stream(),
+                                /*is_uninitialized_create=*/false, client));
 
   ScopedHold device_buffer(py_buffer->GetBufferWithUsageHold());
   CHECK(device_buffer.ok());
@@ -715,6 +735,25 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::FromHostBuffer(
 }
 
 /* static */
+StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::CreateUninitialized(
+    const Shape& shape, PjRtClient* client, Device* device) {
+  tensorflow::profiler::TraceMe traceme("PjRtBuffer::CreateUninitialized");
+  VLOG(2) << "PjRtBuffer::CreateUninitialized: shape: " << shape.ToString()
+          << " device: " << device->DebugString();
+  TF_ASSIGN_OR_RETURN(LocalDeviceState * local_device,
+                      device->GetLocalDeviceState());
+
+  TransferManager* transfer_manager =
+      client->client()->backend().transfer_manager();
+  TF_ASSIGN_OR_RETURN(Shape compact_shape,
+                      transfer_manager->ChooseCompactLayoutForShape(shape));
+
+  return AllocateDestinationBuffer(compact_shape, device, local_device,
+                                   /*copy_stream=*/nullptr,
+                                   /*is_uninitialized_create=*/true, client);
+}
+
+/* static */
 StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::FromHostLiteral(
     const LiteralSlice& literal, PjRtClient* client, Device* device) {
   tensorflow::profiler::TraceMe traceme("PjRtBuffer::FromHostLiteral");
@@ -731,7 +770,8 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::FromHostLiteral(
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<PjRtBuffer> py_buffer,
       AllocateDestinationBuffer(compact_shape, device, local_device,
-                                local_device->host_to_device_stream(), client));
+                                local_device->host_to_device_stream(),
+                                /*is_uninitialized_create=*/false, client));
 
   ScopedHold device_buffer(py_buffer->GetBufferWithUsageHold());
   CHECK(device_buffer.ok());
@@ -795,7 +835,8 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::FromHostLiteral(
   for (const auto& shape : shapes) {
     StatusOr<std::unique_ptr<PjRtBuffer>> buffer_or =
         AllocateDestinationBuffer(shape, device, local_device,
-                                  /*copy_stream=*/nullptr, client);
+                                  /*copy_stream=*/nullptr,
+                                  /*is_uninitialized_create=*/false, client);
     if (!buffer_or.ok()) {
       notifier(buffer_or.status());
       return;
@@ -963,7 +1004,7 @@ PjRtBuffer::GetBufferForHoldLocked(ScopedHold::Type type) {
     // acquiring any other kind of hold.
     WaitForOutstandingDonationHold();
     if (device_buffer_ == nullptr) {
-      return InvalidArgument("Hold requested on invalid buffer");
+      return InvalidArgument("Hold requested on deleted or donated buffer");
     } else {
       ++holds_[type];
     }
@@ -1043,7 +1084,8 @@ PjRtBuffer::CopyToHostAsyncInternal(bool discard_cached_copy,
     // We can't perform any other action while a donation hold is in progress.
     WaitForOutstandingDonationHold();
     if (device_buffer_ == nullptr) {
-      return InvalidArgument("CopyToHostAsync() called on invalid buffer.");
+      return InvalidArgument(
+          "CopyToHostAsync() called on deleted or donated buffer");
     }
     if (discard_cached_copy) {
       auto it = host_values_.find(host_layout);
@@ -1113,7 +1155,7 @@ StatusOr<std::shared_ptr<Literal>> PjRtBuffer::ToLiteral(
   TF_ASSIGN_OR_RETURN(std::shared_ptr<HostValue> host_value,
                       CopyToHostAsyncInternal(discard_cached_copy, layout));
   if (host_value == nullptr) {
-    return InvalidArgument("ToLiteral called on invalid buffer");
+    return InvalidArgument("ToLiteral called on deleted or donated buffer");
   }
   host_value->ready.WaitForNotification();
   TF_RETURN_IF_ERROR(host_value->status);
@@ -1153,7 +1195,8 @@ PjRtBuffer::CopyToDeviceHelper(
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<PjRtBuffer> py_buffer,
       AllocateDestinationBuffer(on_host_shape_, dst_device, dst_local_device,
-                                transfer_stream, client_));
+                                transfer_stream,
+                                /*is_uninitialized_create=*/false, client_));
 
   TF_ASSIGN_OR_RETURN(ShapedBuffer src_buffer, AsShapedBuffer());
 
@@ -1230,7 +1273,8 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtBuffer::CopyToDevice(
     // We can't perform any other action while a donation hold is in progress.
     WaitForOutstandingDonationHold();
     if (device_buffer_ == nullptr) {
-      return InvalidArgument("CopyToDevice called on invalid buffer");
+      return InvalidArgument(
+          "CopyToDevice called on deleted or donated buffer");
     }
     AcquireHoldLocked(&src_device_buffer);
   }
@@ -1271,7 +1315,8 @@ Status PjRtBuffer::BlockHostUntilReady() {
   {
     absl::MutexLock lock(&mu_);
     if (device_buffer_ == nullptr) {
-      return InvalidArgument("BlockHostUntilReady() called on invalid buffer.");
+      return InvalidArgument(
+          "BlockHostUntilReady() called on deleted or donated buffer");
     }
     device_buffer = device_buffer_;
   }
@@ -1341,7 +1386,7 @@ StatusOr<TupleHandle> MakeTupleHelper(
         local_device->compute_stream()->parent(), root_table_memory.cref()));
   }
 
-  ExecutionInput execution_input(on_device_shape);
+  ExecutionInput execution_input(on_device_shape, on_host_shape);
   ShapeTree<MaybeOwningDeviceMemory>::iterator input_iterator =
       execution_input.MutableBuffers()->begin();
   ShapeTree<MaybeOwningDeviceMemory>::iterator iterator_end =
@@ -1402,11 +1447,12 @@ static Device* LookupDevice(const PjRtClient& client, int device_id) {
 
 PjRtExecutable::PjRtExecutable(
     std::vector<std::unique_ptr<LocalExecutable>> executables,
-    bool parameter_is_tupled_arguments, DeviceAssignment device_assignment,
+    bool parameter_is_tupled_arguments,
+    std::shared_ptr<DeviceAssignment> device_assignment,
     std::vector<std::pair<int, int>> local_logical_device_ids,
     std::vector<Device*> local_devices, PjRtClient* client)
     : client_(client),
-      device_assignment_(std::make_shared<DeviceAssignment>(device_assignment)),
+      device_assignment_(std::move(device_assignment)),
       parameter_is_tupled_arguments_(parameter_is_tupled_arguments),
       local_logical_device_ids_(std::move(local_logical_device_ids)),
       local_devices_(std::move(local_devices)) {
@@ -1415,11 +1461,21 @@ PjRtExecutable::PjRtExecutable(
     executables_.emplace_back(std::move(executable));
   }
 
-  // This must go after `executables_` is initialized.
-  VLOG(1) << "PjRtExecutable " << name() << " device_assignment:\n"
-          << device_assignment_->ToString();
-
-  const int num_partitions = device_assignment_->computation_count();
+  int num_partitions;
+  if (device_assignment_ == nullptr) {
+    // This must go after `executables_` is initialized.
+    VLOG(1) << "PjRtExecutable " << name() << " portable single-core";
+    num_partitions = 1;
+    CHECK(local_devices_.empty());
+  } else {
+    // This must go after `executables_` is initialized.
+    VLOG(1) << "PjRtExecutable " << name() << " device_assignment:\n"
+            << device_assignment_->ToString();
+    CHECK_GE(local_devices_.size(), 1) << device_assignment_->ToString();
+    CHECK_LE(local_devices_.size(), client_->local_device_count())
+        << "Inconsistent local device count.";
+    num_partitions = device_assignment_->computation_count();
+  }
 
   // SPMD sharding produces a single executable for multiple partitions.
   if (executables_.size() > 1) {
@@ -1427,10 +1483,6 @@ PjRtExecutable::PjRtExecutable(
         << "Number of executables " << executables_.size()
         << " did not match number of partitions " << num_partitions;
   }
-
-  CHECK_GE(local_devices_.size(), 1) << device_assignment_->ToString();
-  CHECK_LE(local_devices_.size(), client_->local_device_count())
-      << "Inconsistent local device count.";
 }
 
 Status PjRtExecutable::SetUpDonation(PjRtClient* client, bool tuple_inputs) {
@@ -1462,7 +1514,8 @@ const std::string& PjRtExecutable::name() const {
 StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
     absl::Span<PjRtBuffer* const> argument_handles, int replica, int partition,
     int executable_idx, const RunId& run_id, const ExecuteOptions& options,
-    Device* device, std::vector<PjRtBuffer::ScopedHold>* device_buffers) const {
+    Device* device, std::vector<PjRtBuffer::ScopedHold>* device_buffers,
+    std::shared_ptr<DeviceAssignment> device_assignment) const {
   int device_ordinal = device->local_device_state()->device_ordinal();
   tensorflow::profiler::TraceMeConsumer activity(
       "LocalExecutable::Execute", tensorflow::profiler::ContextType::kPjRt,
@@ -1471,7 +1524,6 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
           << " mapped to device ordinal for execution: " << device_ordinal;
 
   absl::flat_hash_set<BufferSequencingEvent*> events;
-  std::vector<const Shape*> argument_host_shapes;
   std::vector<ExecutionInput> execution_inputs;
   device_buffers->reserve(argument_handles.size());
   const absl::flat_hash_set<int>& parameters_that_must_be_donated =
@@ -1520,24 +1572,22 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
   }
 
   LocalDeviceState* device_state = &client_->device_state(device_ordinal);
-  TupleHandle tuple_handle;
+  absl::optional<TupleHandle> tuple_handle;
   if (parameter_is_tupled_arguments_ && !options.arguments_are_tupled) {
     TF_ASSIGN_OR_RETURN(tuple_handle,
                         MakeTupleHelper(client_, device_state, argument_handles,
                                         *device_buffers, device_ordinal));
-    events.insert(tuple_handle.event.get());
-    execution_inputs.emplace_back(std::move(tuple_handle.execution_input));
-    argument_host_shapes.push_back(&tuple_handle.on_host_shape);
+    events.insert(tuple_handle->event.get());
+    execution_inputs.emplace_back(std::move(tuple_handle->execution_input));
   } else {
-    argument_host_shapes.reserve(argument_handles.size());
     execution_inputs.reserve(argument_handles.size());
     for (int i = 0; i < argument_handles.size(); ++i) {
       PjRtBuffer* handle = argument_handles[i];
-      argument_host_shapes.push_back(&handle->on_host_shape());
 
       const PjRtBuffer::ScopedHold& device_buffer = (*device_buffers)[i];
       // Make an ExecutionInput from the device buffer.
-      execution_inputs.emplace_back(handle->on_device_shape());
+      execution_inputs.emplace_back(handle->on_device_shape(),
+                                    handle->on_host_shape());
       ExecutionInput& execution_input = execution_inputs.back();
       ShapeTree<MaybeOwningDeviceMemory>::iterator input_iterator =
           execution_input.MutableBuffers()->begin();
@@ -1559,10 +1609,14 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
   run_options.set_allocator(client_->allocator());
   run_options.set_intra_op_thread_pool(
       client_->client()->backend().eigen_intra_op_thread_pool_device());
-  run_options.set_device_assignment(device_assignment_.get());
+  run_options.set_device_assignment(device_assignment.get());
   run_options.set_run_id(run_id);
   run_options.set_rng_seed(device_state->GetNewPrngSeed());
   run_options.set_gpu_executable_run_options(client_->gpu_run_options());
+  run_options.set_launch_id(options.launch_id);
+  if (run_options.launch_id() != 0) {
+    VLOG(1) << "launch id for " << name() << ": " << run_options.launch_id();
+  }
 
   // The choice of where we wait is arbitrary; the reason for the wait is
   // pacing to avoid problems such as memory fragmentation and running ahead
@@ -1573,8 +1627,8 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
       device_state->compute_semaphore().ScopedAcquire(1));
 
   StatusOr<ExecutionOutput> result_buffer_or_status =
-      executables_[executable_idx]->RunAsync(
-          argument_host_shapes, std::move(execution_inputs), run_options);
+      executables_[executable_idx]->RunAsync(std::move(execution_inputs),
+                                             run_options);
 
   VLOG(1) << "Replica " << replica << " partition " << partition
           << " completed; ok=" << result_buffer_or_status.ok();
@@ -1603,7 +1657,7 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
     device_state->ThenExecuteOnCallbackThread(
         device_state->compute_stream(),
         [references{std::make_tuple(executables_[executable_idx],
-                                    compute_reservation, device_assignment_)},
+                                    compute_reservation, device_assignment)},
          donated_ptrs{std::move(donated_ptrs)}, allocator{client_->allocator()},
          device_ordinal]() {
           for (const auto& ptr : donated_ptrs) {
@@ -1616,7 +1670,7 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
     device_state->ThenRelease(
         device_state->compute_stream(),
         std::make_tuple(executables_[executable_idx], compute_reservation,
-                        device_assignment_));
+                        device_assignment));
   }
 
   return result_buffer_or_status.ConsumeValueOrDie().ConsumeResult();
@@ -1625,9 +1679,22 @@ StatusOr<ScopedShapedBuffer> PjRtExecutable::EnqueueExecution(
 StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 PjRtExecutable::ExecuteHelper(absl::Span<PjRtBuffer* const> argument_handles,
                               int replica, int partition, const RunId& run_id,
-                              const ExecuteOptions& options) const {
-  const int device_id = (*device_assignment_)(replica, partition);
-  Device* device = LookupDevice(*client_, device_id);
+                              const ExecuteOptions& options,
+                              Device* device) const {
+  std::shared_ptr<DeviceAssignment> device_assignment;
+  if (device == nullptr) {
+    CHECK(device_assignment_ != nullptr);
+    const int device_id = (*device_assignment_)(replica, partition);
+    device = LookupDevice(*client_, device_id);
+    device_assignment = device_assignment_;
+  } else {
+    CHECK(device_assignment_ == nullptr);
+    CHECK_EQ(replica, 0);
+    CHECK_EQ(partition, 0);
+    CHECK(local_devices_.empty());
+    device_assignment = std::make_shared<DeviceAssignment>(1, 1);
+    (*device_assignment)(0, 0) = device->id();
+  }
 
   CHECK_EQ(device->host_id(), client_->host_id());
   int device_ordinal = device->local_device_state()->device_ordinal();
@@ -1640,9 +1707,9 @@ PjRtExecutable::ExecuteHelper(absl::Span<PjRtBuffer* const> argument_handles,
 
   std::vector<PjRtBuffer::ScopedHold> device_buffers;
   device_buffers.reserve(argument_handles.size());
-  StatusOr<ScopedShapedBuffer> result_buffer_or_status =
-      EnqueueExecution(argument_handles, replica, partition, executable_idx,
-                       run_id, options, device, &device_buffers);
+  StatusOr<ScopedShapedBuffer> result_buffer_or_status = EnqueueExecution(
+      argument_handles, replica, partition, executable_idx, run_id, options,
+      device, &device_buffers, std::move(device_assignment));
 
   if (!result_buffer_or_status.ok()) {
     LOG(ERROR) << "Execution of replica " << replica
@@ -1736,6 +1803,13 @@ StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 PjRtExecutable::ExecuteOnLocalDevice(
     absl::Span<PjRtBuffer* const> argument_handles, Device* device,
     const ExecuteOptions& options) const {
+  if (device_assignment_ == nullptr) {
+    VLOG(1) << "Executing portable single-core program on "
+            << device->DebugString();
+    return ExecuteHelper(argument_handles,
+                         /*replica=*/0,
+                         /*partition=*/0, RunId(), options, device);
+  }
   for (int i = 0; i < local_devices_.size(); ++i) {
     if (local_devices_[i] == device) {
       VLOG(1) << "Executing computation " << name();
@@ -1754,6 +1828,8 @@ StatusOr<std::vector<std::vector<std::unique_ptr<PjRtBuffer>>>>
 PjRtExecutable::ExecuteOnLocalDevices(
     absl::Span<const std::vector<PjRtBuffer*>> argument_handles,
     const ExecuteOptions& options) const {
+  CHECK(device_assignment_ != nullptr);
+
   RunId run_id;
   tensorflow::profiler::TraceMeProducer activity(
       "LocalExecutable::ExecuteOnLocalDevices",
@@ -1952,16 +2028,33 @@ StatusOr<std::pair<std::vector<Shape>, Shape>> GetShardedProgramShapes(
     build_options.set_device_allocator(client->allocator());
   }
 
-  if (!build_options.has_device_assignment()) {
-    VLOG(2) << "PjRtExecutable::Compile using default device_assignment.";
-    TF_ASSIGN_OR_RETURN(
-        DeviceAssignment device_assignment,
-        client->GetDefaultDeviceAssignment(build_options.num_replicas(),
-                                           build_options.num_partitions()));
-    build_options.set_device_assignment(device_assignment);
+  int num_replicas;
+  int num_partitions;
+  std::shared_ptr<DeviceAssignment> device_assignment;
+  if (options.compile_portable_executable) {
+    if (build_options.has_device_assignment()) {
+      return InvalidArgument(
+          "CompileOptions requests portable executable but "
+          "ExecutableBuildOptions includes a device assignment");
+    }
+    num_replicas = 1;
+    num_partitions = 1;
+  } else {
+    if (!build_options.has_device_assignment()) {
+      VLOG(2) << "PjRtExecutable::Compile using default device_assignment.";
+      TF_ASSIGN_OR_RETURN(
+          DeviceAssignment device_assignment,
+          client->GetDefaultDeviceAssignment(build_options.num_replicas(),
+                                             build_options.num_partitions()));
+      build_options.set_device_assignment(device_assignment);
+    }
+    VLOG(2) << "PjRtExecutable::Compile device_assignment:\n"
+            << build_options.device_assignment().ToString();
+    num_replicas = build_options.device_assignment().replica_count();
+    num_partitions = build_options.device_assignment().computation_count();
+    device_assignment =
+        std::make_shared<DeviceAssignment>(build_options.device_assignment());
   }
-  VLOG(2) << "PjRtExecutable::Compile device_assignment:\n"
-          << build_options.device_assignment().ToString();
 
   TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
                       computation.GetProgramShape());
@@ -2020,33 +2113,31 @@ StatusOr<std::pair<std::vector<Shape>, Shape>> GetShardedProgramShapes(
   TF_RETURN_IF_ERROR(assign_layouts(sharded_shapes.second, &result_layout));
   build_options.set_result_layout(result_layout);
 
-  const int num_replicas = build_options.device_assignment().replica_count();
-  const int num_partitions =
-      build_options.device_assignment().computation_count();
-
   std::vector<std::pair<int, int>> local_logical_device_ids;
   std::vector<Device*> local_devices;
-  for (int replica = 0; replica < num_replicas; ++replica) {
-    for (int partition = 0; partition < num_partitions; ++partition) {
-      int device_id = build_options.device_assignment()(replica, partition);
-      Device* device = LookupDevice(*client, device_id);
-      if (device->host_id() != client->host_id()) {
-        VLOG(3) << "Non-local device: " << device_id;
-        continue;
+  if (device_assignment != nullptr) {
+    for (int replica = 0; replica < num_replicas; ++replica) {
+      for (int partition = 0; partition < num_partitions; ++partition) {
+        int device_id = (*device_assignment)(replica, partition);
+        Device* device = LookupDevice(*client, device_id);
+        if (device->host_id() != client->host_id()) {
+          VLOG(3) << "Non-local device: " << device_id;
+          continue;
+        }
+        local_logical_device_ids.emplace_back(replica, partition);
+        local_devices.push_back(device);
       }
-      local_logical_device_ids.emplace_back(replica, partition);
-      local_devices.push_back(device);
     }
-  }
-  if (local_devices.empty()) {
-    return InvalidArgument(
-        "Device assignment (%s) does not have any local devices.",
-        build_options.device_assignment().ToString());
-  }
+    if (local_devices.empty()) {
+      return InvalidArgument(
+          "Device assignment (%s) does not have any local devices.",
+          device_assignment->ToString());
+    }
 
-  if (build_options.device_ordinal() < 0) {
-    build_options.set_device_ordinal(
-        local_devices.front()->local_device_state()->device_ordinal());
+    if (build_options.device_ordinal() < 0) {
+      build_options.set_device_ordinal(
+          local_devices.front()->local_device_state()->device_ordinal());
+    }
   }
 
   TF_ASSIGN_OR_RETURN(
@@ -2054,13 +2145,13 @@ StatusOr<std::pair<std::vector<Shape>, Shape>> GetShardedProgramShapes(
       client->client()->Compile(computation, argument_layout_pointers,
                                 build_options));
 
-  auto py_executable = absl::make_unique<PjRtExecutable>(
+  auto executable = absl::make_unique<PjRtExecutable>(
       std::move(local_executables), options.parameter_is_tupled_arguments,
-      build_options.device_assignment(), std::move(local_logical_device_ids),
+      std::move(device_assignment), std::move(local_logical_device_ids),
       std::move(local_devices), client);
-  TF_RETURN_IF_ERROR(py_executable->SetUpDonation(
-      client, options.parameter_is_tupled_arguments));
-  return py_executable;
+  TF_RETURN_IF_ERROR(
+      executable->SetUpDonation(client, options.parameter_is_tupled_arguments));
+  return executable;
 }
 
 }  // namespace xla

@@ -32,7 +32,6 @@ from tensorflow.python.distribute.cluster_resolver import SimpleClusterResolver
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
-from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
@@ -75,8 +74,7 @@ class _TestExtended(distribute_lib.StrategyExtendedV1):
 
   def _call_for_each_replica(self, fn, args, kwargs):
     with _TestReplicaContext(
-        self._container_strategy(),
-        replica_id_in_sync_group=constant_op.constant(0, dtypes.int32)):
+        self._container_strategy(), replica_id_in_sync_group=0):
       return fn(*args, **kwargs)
 
   def _create_variable(self, next_creator, **kwargs):
@@ -150,7 +148,7 @@ def _run_in_and_out_of_scope(unbound_test_method):
     # When run under a different strategy the test method should fail.
     another_strategy = _TestStrategy()
     msg = "Mixing different .*Strategy objects"
-    with test_case.assertRaisesRegexp(RuntimeError, msg):
+    with test_case.assertRaisesRegex(RuntimeError, msg):
       with another_strategy.scope():
         unbound_test_method(test_case, dist)
   return wrapper
@@ -206,7 +204,7 @@ class TestStrategyTest(test.TestCase):
     scope.__enter__()
     self.assertIs(dist, ds_context.get_strategy())
     with ops.device("/device:CPU:0"):
-      with self.assertRaisesRegexp(RuntimeError, "Device scope nesting error"):
+      with self.assertRaisesRegex(RuntimeError, "Device scope nesting error"):
         scope.__exit__(None, None, None)
     scope.__exit__(None, None, None)
     _assert_in_default_state(self)
@@ -222,8 +220,8 @@ class TestStrategyTest(test.TestCase):
     scope.__enter__()
     self.assertIs(dist, ds_context.get_strategy())
     with variable_scope.variable_creator_scope(creator):
-      with self.assertRaisesRegexp(RuntimeError,
-                                   "Variable creator scope nesting error"):
+      with self.assertRaisesRegex(RuntimeError,
+                                  "Variable creator scope nesting error"):
         scope.__exit__(None, None, None)
     scope.__exit__(None, None, None)
     _assert_in_default_state(self)
@@ -239,8 +237,8 @@ class TestStrategyTest(test.TestCase):
       scope.__enter__()
       self.assertIs(dist, ds_context.get_strategy())
       with variable_scope.variable_scope("AA"):
-        with self.assertRaisesRegexp(RuntimeError,
-                                     "Variable scope nesting error"):
+        with self.assertRaisesRegex(RuntimeError,
+                                    "Variable scope nesting error"):
           scope.__exit__(None, None, None)
     _assert_in_default_state(self)
 
@@ -284,15 +282,15 @@ class TestStrategyTest(test.TestCase):
     _assert_in_default_state(self)
     dist = _TestStrategy()
     with dist.scope():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           RuntimeError,
           "Must not be called inside a `tf.distribute.Strategy` scope"):
         ds_context.experimental_set_strategy(_TestStrategy())
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           RuntimeError,
           "Must not be called inside a `tf.distribute.Strategy` scope"):
         ds_context.experimental_set_strategy(dist)
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           RuntimeError,
           "Must not be called inside a `tf.distribute.Strategy` scope"):
         ds_context.experimental_set_strategy(None)
@@ -313,9 +311,8 @@ class TestStrategyTest(test.TestCase):
       self.assertIs(dist, ds_context.get_strategy())
       dist2 = _TestStrategy()
       scope2 = dist2.scope()
-      with self.assertRaisesRegexp(
-          RuntimeError,
-          "Mixing different tf.distribute.Strategy objects"):
+      with self.assertRaisesRegex(
+          RuntimeError, "Mixing different tf.distribute.Strategy objects"):
         with scope2:
           pass
     _assert_in_default_state(self)
@@ -496,7 +493,7 @@ class DefaultDistributionStrategyTest(test.TestCase, parameterized.TestCase):
       _assert_in_default_state(self)
 
       with test_strategy.scope():
-        with self.assertRaisesRegexp(
+        with self.assertRaisesRegex(
             RuntimeError, "Mixing different tf.distribute.Strategy objects"):
           variable_scope.variable(1.0, name="error")
 
@@ -504,7 +501,7 @@ class DefaultDistributionStrategyTest(test.TestCase, parameterized.TestCase):
         _assert_in_default_state(self)
 
         with test_strategy.scope():
-          with self.assertRaisesRegexp(
+          with self.assertRaisesRegex(
               RuntimeError, "Mixing different tf.distribute.Strategy objects"):
             variable_scope.variable(1.0, name="also_error")
 
@@ -559,6 +556,14 @@ class DefaultDistributionStrategyTest(test.TestCase, parameterized.TestCase):
         default_strategy.experimental_distribute_datasets_from_function(
             dataset_fn)
       dataset_ops.make_initializable_iterator(dist_dataset_from_func)
+
+  @combinations.generate(combinations.combine(tf_api_version=1))
+  def testV1(self):
+    self.assertIsInstance(ds_context.get_strategy(), distribute_lib.StrategyV1)
+
+  @combinations.generate(combinations.combine(tf_api_version=2))
+  def testV2(self):
+    self.assertIsInstance(ds_context.get_strategy(), distribute_lib.Strategy)
 
 
 class InputContextTest(test.TestCase):

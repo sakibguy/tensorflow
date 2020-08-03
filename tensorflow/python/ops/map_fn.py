@@ -38,8 +38,14 @@ from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import deprecation
+from tensorflow.python.util import lazy_loader
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
+
+
+np_arrays = lazy_loader.LazyLoader(
+    "np_arrays", globals(),
+    "tensorflow.python.ops.numpy_ops.np_arrays")
 
 
 @tf_export(v1=["map_fn"])
@@ -267,7 +273,7 @@ def map_fn(fn,
     elems: A tensor or (possibly nested) sequence of tensors, each of which will
       be unstacked along their first dimension.  `fn` will be applied to the
       nested sequence of the resulting slices.  `elems` may include ragged and
-      sparse tensors.
+      sparse tensors. `elems` must consist of at least one tensor.
     dtype: Deprecated: Equivalent to `fn_output_signature`.
     parallel_iterations: (optional) The number of iterations allowed to run in
       parallel. When graph building, the default value is 10. While executing
@@ -296,7 +302,7 @@ def map_fn(fn,
     TypeError: if `fn` is not callable or the structure of the output of
       `fn` and `fn_output_signature` do not match.
     ValueError: if the lengths of the output of `fn` and `fn_output_signature`
-      do not match.
+      do not match, or if the `elems` does not contain any tensor.
 
   Examples:
 
@@ -375,6 +381,13 @@ def map_fn(fn,
 
   # Flatten the input tensors, and get the TypeSpec for each one.
   elems_flat = nest.flatten(elems)
+
+  # Check in case this is an empty list
+  if len(elems_flat) == 0:
+    raise ValueError(
+        "elems must be a Tensor or (possibly nested) sequence of Tensors. "
+        "Got {}, which does not contain any Tensors.".format(elems))
+
   elems_flat_signature = [type_spec.type_spec_from_value(e) for e in elems_flat]
   elems_unflatten = lambda x: nest.pack_sequence_as(elems, x)
 
@@ -412,7 +425,10 @@ def map_fn(fn,
     ]
 
     # Check that inputs are not scalars.
-    elems_static_shape = elems_flat[0].shape
+    first_elem = elems_flat[0]
+    if isinstance(first_elem, np_arrays.ndarray):
+      first_elem = first_elem.data
+    elems_static_shape = first_elem.shape
     if elems_static_shape.ndims is not None and elems_static_shape.ndims < 1:
       if len(elems_flat) == 1:
         raise ValueError("elems must be a 1+ dimensional Tensor, not a scalar")

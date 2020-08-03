@@ -285,15 +285,15 @@ class AutoCastVariableTest(test.TestCase, parameterized.TestCase):
         self.assertAllClose(3., self.evaluate(x.assign_sub(v1)))
 
         # Attempt to assign float16 values
-        with self.assertRaisesRegexp(
+        with self.assertRaisesRegex(
             ValueError,
             'conversion requested dtype float32 for Tensor with dtype float16'):
           self.evaluate(x.assign(v2))
-        with self.assertRaisesRegexp(
+        with self.assertRaisesRegex(
             ValueError,
             'conversion requested dtype float32 for Tensor with dtype float16'):
           self.evaluate(x.assign_add(v2))
-        with self.assertRaisesRegexp(
+        with self.assertRaisesRegex(
             ValueError,
             'conversion requested dtype float32 for Tensor with dtype float16'):
           self.evaluate(x.assign_sub(v2))
@@ -391,13 +391,13 @@ class AutoCastVariableTest(test.TestCase, parameterized.TestCase):
   def test_invalid_wrapped_variable(self, distribution):
     with distribution.scope():
       # Wrap a non-variable
-      with self.assertRaisesRegexp(ValueError, 'variable must be of type'):
+      with self.assertRaisesRegex(ValueError, 'variable must be of type'):
         x = constant_op.constant([1.], dtype=dtypes.float32)
         autocast_variable.create_autocast_variable(x)
 
       # Wrap a non-floating point variable
-      with self.assertRaisesRegexp(ValueError,
-                                   'variable must be a floating point'):
+      with self.assertRaisesRegex(ValueError,
+                                  'variable must be a floating point'):
         x = get_var(1, dtypes.int32)
         autocast_variable.create_autocast_variable(x)
 
@@ -432,14 +432,21 @@ class AutoCastVariableTest(test.TestCase, parameterized.TestCase):
         )
 
   def test_repr_distributed(self):
-    with mirrored_strategy.MirroredStrategy(['/cpu:1', '/cpu:2']).scope():
+    strategy = mirrored_strategy.MirroredStrategy(['/cpu:1', '/cpu:2'])
+    with strategy.scope():
       x = get_var(1., dtypes.float32)
       x = autocast_variable.create_autocast_variable(x)
-      self.assertRegexpMatches(
-          repr(x).replace('\n', ' '),
-          '<AutoCastDistributedVariable dtype=float32 true_dtype=float32 '
-          'inner_variable=MirroredVariable.*>'
-      )
+      use_policy = getattr(strategy.extended, '_use_policy', False)
+      if use_policy:
+        self.assertRegex(
+            repr(x).replace('\n', ' '),
+            '<AutoCastDistributedVariable dtype=float32 true_dtype=float32 '
+            'inner_variable=DistributedVariable.*>')
+      else:
+        self.assertRegex(
+            repr(x).replace('\n', ' '),
+            '<AutoCastDistributedVariable dtype=float32 true_dtype=float32 '
+            'inner_variable=MirroredVariable.*>')
 
   @parameterized.named_parameters(
       ('v1', gradient_descent_v1.GradientDescentOptimizer),

@@ -66,6 +66,10 @@ class IrEmitterUnnested : public IrEmitter,
     llvm::Value* lane_id;
   };
 
+  absl::string_view platform_name() const override {
+    return ir_emitter_context_->platform_name();
+  }
+
   // A function object to generate code to process one element in a tile.
   //
   // index: the index for the first output element of the current thread.
@@ -93,7 +97,7 @@ class IrEmitterUnnested : public IrEmitter,
 
   // Transfers the ownship of thunk_sequence_ out.
   std::unique_ptr<ThunkSequence> ConsumeThunkSequence() {
-    return std::move(thunk_sequence_);
+    return std::make_unique<ThunkSequence>(std::move(thunk_sequence_));
   }
 
   Status DefaultAction(HloInstruction* hlo) override;
@@ -141,10 +145,12 @@ class IrEmitterUnnested : public IrEmitter,
   // Emits LLVM global variables corresponding to constant instructions.
   Status EmitConstantGlobals();
 
+  Status Postprocess(HloInstruction* hlo) override;
+
  private:
   // Add a owning Thunk object to the thunk sequence.
   void AddThunkToThunkSequence(std::unique_ptr<Thunk> thunk) override {
-    thunk_sequence_->emplace_back(std::move(thunk));
+    thunk_sequence_.emplace_back(std::move(thunk));
   }
 
   // Input = {static array, dynamic_dim0, dynamic_dim1}
@@ -253,10 +259,6 @@ class IrEmitterUnnested : public IrEmitter,
   int64 ByteSizeOf(const Shape& shape) const override {
     return llvm_ir::ByteSizeOf(
         shape, ir_emitter_context_->llvm_module()->getDataLayout());
-  }
-
-  const se::Platform* platform() const override {
-    return ir_emitter_context_->platform();
   }
 
   // Builds the prototype of the IR kernel for `inst` and adds it to the module.
@@ -543,13 +545,13 @@ class IrEmitterUnnested : public IrEmitter,
       absl::optional<int64> thread_id_filter = absl::nullopt,
       absl::optional<int64> block_id_filter = absl::nullopt);
 
-  Status Postprocess(HloInstruction* hlo) override;
-
   // Returns the last generated thunk.
-  Thunk* LastThunk() const { return thunk_sequence_->back().get(); }
+  Thunk* LastThunk() const { return thunk_sequence_.back().get(); }
+
+  Thunk::ThunkInfo GetThunkInfo(const HloInstruction* hlo) const override;
 
   // The thunk sequence this IrEmitter generates for the input computation.
-  std::unique_ptr<ThunkSequence> thunk_sequence_;
+  ThunkSequence thunk_sequence_;
 
   // The HloComputation that this IrEmitter emits code for.
   const HloComputation* hlo_computation_;

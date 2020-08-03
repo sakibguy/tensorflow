@@ -220,7 +220,7 @@ class TPUStrategyV2(distribute_lib.Strategy):
     # Packed variable is used to reduce the overhead of function execution.
     # For a DistributedVariable, only one variable handle is captured into a
     # function graph. It's only supported in eager mode.
-    self._enable_packed_variable_in_eager_mode = False
+    self._enable_packed_variable_in_eager_mode = True
 
   def run(self, fn, args=(), kwargs=None, options=None):
     """Run the computation defined by `fn` on each TPU replica.
@@ -330,7 +330,7 @@ class TPUStrategy(distribute_lib.Strategy):
     # Packed variable is used to reduce the overhead of function execution.
     # For a DistributedVariable, only one variable handle is captured into a
     # function graph. It's only supported in eager mode.
-    self._enable_packed_variable_in_eager_mode = False
+    self._enable_packed_variable_in_eager_mode = True
 
   # TODO(cjfj): Modify `_call_for_each_replica` in `TPUExtended` such that this
   # can use the default implementation.
@@ -390,7 +390,7 @@ class TPUStrategyV1(distribute_lib.StrategyV1):
     # Packed variable is used to reduce the overhead of function execution.
     # For a DistributedVariable, only one variable handle is captured into a
     # function graph. It's only supported in eager mode.
-    self._enable_packed_variable_in_eager_mode = False
+    self._enable_packed_variable_in_eager_mode = True
 
   @property
   def steps_per_run(self):
@@ -477,7 +477,11 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
       # not specified.
       steps_per_run = 1
 
+    # `self._tpu_function_cache` is a dict of `tf.function`s, thus if a
+    # `tf.function` is passed into `strategy.run` in eager mode, the
+    # `tf.function` won't get retraced.
     self._tpu_function_cache = weakref.WeakKeyDictionary()
+
     self._tpu_cluster_resolver = tpu_cluster_resolver
     self._tpu_metadata = self._tpu_cluster_resolver.get_tpu_system_metadata()
     self._device_assignment = device_assignment
@@ -533,12 +537,15 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
     self._logical_device_stack = [0]
 
     if context.executing_eagerly():
-      # In async remote eager, we want to sync the exectors before exiting the
+      # In async remote eager, we want to sync the executors before exiting the
       # program.
       def async_wait():
         if context.context()._context_handle is not None:  # pylint: disable=protected-access
           context.async_wait()
       atexit.register(async_wait)
+
+    # Flag to turn on VariablePolicy
+    self._use_var_policy = False
 
   def _validate_colocate_with_variable(self, colocate_with_variable):
     distribute_utils. validate_colocate(colocate_with_variable, self)
@@ -683,7 +690,10 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
             select_replica, per_replica_inputs),))
 
       replicate_outputs = tpu.replicate(
-          run_fn, replicate_inputs, device_assignment=self._device_assignment)
+          run_fn,
+          replicate_inputs,
+          device_assignment=self._device_assignment,
+          xla_options=tpu.XLAOptions(use_spmd_for_xla_partitioning=False))
 
       # If run_fn has tensor outputs, tpu.replicate returns a list of list. We
       # will flatten it in this case. If run_fn has no tensor outputs,
@@ -866,8 +876,8 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
 
     return distribute_utils.create_mirrored_variable(
         self._container_strategy(), _real_mirrored_creator,
-        tpu_values.TPUMirroredVariable, tpu_values.TPUSyncOnReadVariable,
-        **kwargs)
+        distribute_utils.TPU_VARIABLE_CLASS_MAPPING,
+        distribute_utils.TPU_VARIABLE_POLICY_MAPPING, **kwargs)
 
   def _reduce_to(self, reduce_op, value, destinations, experimental_hints):
     if (isinstance(value, values.DistributedValues) or
@@ -1095,7 +1105,7 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
     return func(args, kwargs)
 
   def _tpu_function_creator(self, fn, options):
-    if fn in self._tpu_function_cache:
+    if context.executing_eagerly() and fn in self._tpu_function_cache:
       return self._tpu_function_cache[fn]
 
     strategy = self._container_strategy()
@@ -1138,7 +1148,7 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
         flattened_list = nest.flatten(replicate_inputs[0])
         for input_tensor in flattened_list:
           if tensor_util.is_tensor(input_tensor):
-            rank = input_tensor.get_shape().rank
+            rank = input_tensor.shape.rank
           else:
             rank = np.ndim(input_tensor)
           maximum_shape = tensor_shape.TensorShape([None] * rank)
@@ -1159,7 +1169,8 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
             replicate_inputs,
             device_assignment=self._device_assignment,
             maximum_shapes=maximum_shapes,
-            padding_spec=padding_spec)
+            padding_spec=padding_spec,
+            xla_options=tpu.XLAOptions(use_spmd_for_xla_partitioning=False))
 
       # Remove all no ops that may have been added during 'tpu.replicate()'
       if isinstance(result[0], list):
@@ -1180,8 +1191,7 @@ class TPUExtended(distribute_lib.StrategyExtendedV1):
 
     if context.executing_eagerly():
       tpu_function = def_function.function(tpu_function)
-
-    self._tpu_function_cache[fn] = tpu_function
+      self._tpu_function_cache[fn] = tpu_function
     return tpu_function
 
   def _in_multi_worker_mode(self):
@@ -1199,9 +1209,7 @@ class _TPUReplicaContext(distribute_lib.ReplicaContext):
 
   # TODO(sourabhbajaj): Call for each replica should be updating this.
   # TODO(b/118385803): Always properly initialize replica_id.
-  def __init__(self, strategy, replica_id_in_sync_group=None):
-    if replica_id_in_sync_group is None:
-      replica_id_in_sync_group = constant_op.constant(0, dtypes.int32)
+  def __init__(self, strategy, replica_id_in_sync_group=0):
     distribute_lib.ReplicaContext.__init__(
         self, strategy, replica_id_in_sync_group=replica_id_in_sync_group)
 
@@ -1209,7 +1217,7 @@ class _TPUReplicaContext(distribute_lib.ReplicaContext):
   def devices(self):
     distribute_lib.require_replica_context(self)
     ds = self._strategy
-    replica_id = tensor_util.constant_value(self._replica_id_in_sync_group)
+    replica_id = tensor_util.constant_value(self.replica_id_in_sync_group)
 
     if replica_id is None:  # Non-constant `Tensor` inside `tpu.replicate`.
       # TODO(cjfj): Return other devices when model parallelism is supported.
