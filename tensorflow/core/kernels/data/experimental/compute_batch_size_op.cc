@@ -44,13 +44,15 @@ constexpr std::array<const char*, 2> kMultipleInputDatasetOps = {
     "ZipDataset",
 };
 
-constexpr std::array<const char*, 14> kPassThroughOps = {
+constexpr std::array<const char*, 16> kPassThroughOps = {
     "AssertCardinalityDataset",
     "CacheDataset",
     "FilterDataset",
+    "FinalizeDataset",
     "Identity",
     "ModelDataset",
     "OptimizeDataset",
+    "OptionsDataset",
     "ParseExampleDataset",
     "PrefetchDataset",
     "RepeatDataset",
@@ -65,7 +67,7 @@ template <std::size_t SIZE>
 bool IsDatasetNodeOfType(const NodeDef& node,
                          const std::array<const char*, SIZE>& arr) {
   for (const auto& dataset_op : arr) {
-    if (MatchesAnyVersionRE(dataset_op, node.op())) return true;
+    if (MatchesAnyVersion(dataset_op, node.op())) return true;
   }
   return false;
 }

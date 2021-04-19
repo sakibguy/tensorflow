@@ -15,6 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_ADD_H_
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_ADD_H_
 
+#include <type_traits>
+
 #include "fixedpoint/fixedpoint.h"
 #include "tensorflow/lite/kernels/internal/common.h"
 
@@ -27,37 +29,31 @@ inline void Add(const ArithmeticParams& params,
                 const RuntimeShape& input1_shape, const T* input1_data,
                 const RuntimeShape& input2_shape, const T* input2_data,
                 const RuntimeShape& output_shape, T* output_data) {
+  T activation_min, activation_max;
+  GetActivationParams(params, &activation_min, &activation_max);
+
   const int flat_size =
       MatchingElementsSize(input1_shape, input2_shape, output_shape);
   for (int i = 0; i < flat_size; ++i) {
     output_data[i] = ActivationFunctionWithMinMax(
-        input1_data[i] + input2_data[i], params.quantized_activation_min,
-        params.quantized_activation_max);
-  }
-}
-
-inline void Add(const ArithmeticParams& params,
-                const RuntimeShape& input1_shape, const float* input1_data,
-                const RuntimeShape& input2_shape, const float* input2_data,
-                const RuntimeShape& output_shape, float* output_data) {
-  const int flat_size =
-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
-  for (int i = 0; i < flat_size; i++) {
-    auto x = input1_data[i] + input2_data[i];
-    output_data[i] = ActivationFunctionWithMinMax(
-        x, params.float_activation_min, params.float_activation_max);
+        input1_data[i] + input2_data[i], activation_min, activation_max);
   }
 }
 
 // Element-wise add that can often be used for inner loop of broadcast add as
 // well as the non-broadcast add.
+
+// This function is used for 8-bit as well as for 16-bit, but the accumulator
+// is 32-bit for both cases. The overflow does not happen due to the
+// choice of the shift (20 or 15, accordingly - see add.cc for more comments).
+template <typename T>
 inline void AddElementwise(int size, const ArithmeticParams& params,
-                           const uint8_t* input1_data,
-                           const uint8_t* input2_data, uint8_t* output_data) {
-  TFLITE_DCHECK_GT(params.input1_offset, -256);
-  TFLITE_DCHECK_GT(params.input2_offset, -256);
-  TFLITE_DCHECK_LT(params.input1_offset, 256);
-  TFLITE_DCHECK_LT(params.input2_offset, 256);
+                           const T* input1_data, const T* input2_data,
+                           T* output_data) {
+  TFLITE_DCHECK_GT(params.input1_offset, -std::numeric_limits<T>::max());
+  TFLITE_DCHECK_GT(params.input2_offset, -std::numeric_limits<T>::max());
+  TFLITE_DCHECK_LT(params.input1_offset, std::numeric_limits<T>::max());
+  TFLITE_DCHECK_LT(params.input2_offset, std::numeric_limits<T>::max());
 
   for (int i = 0; i < size; ++i) {
     const int32_t input1_val = params.input1_offset + input1_data[i];
@@ -78,7 +74,7 @@ inline void AddElementwise(int size, const ArithmeticParams& params,
     const int32_t clamped_output =
         std::min(params.quantized_activation_max,
                  std::max(params.quantized_activation_min, raw_output));
-    output_data[i] = static_cast<uint8_t>(clamped_output);
+    output_data[i] = static_cast<T>(clamped_output);
   }
 }
 
@@ -132,10 +128,38 @@ inline void Add(const ArithmeticParams& params,
   AddElementwise(flat_size, params, input1_data, input2_data, output_data);
 }
 
+inline void AddGeneralParamScale(const ArithmeticParams& params,
+                                 const RuntimeShape& input1_shape,
+                                 const int16_t* input1_data,
+                                 const RuntimeShape& input2_shape,
+                                 const int16_t* input2_data,
+                                 const RuntimeShape& output_shape,
+                                 int16_t* output_data) {
+  TFLITE_DCHECK_LE(params.quantized_activation_min,
+                   params.quantized_activation_max);
+  const int flat_size =
+      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+
+  int max_value = std::numeric_limits<int16_t>::max();
+
+  TFLITE_DCHECK_GT(params.input1_offset, -max_value);
+  TFLITE_DCHECK_GT(params.input2_offset, -max_value);
+  TFLITE_DCHECK_LT(params.input1_offset, max_value);
+  TFLITE_DCHECK_LT(params.input2_offset, max_value);
+  AddElementwise(flat_size, params, input1_data, input2_data, output_data);
+}
+
 inline void Add(const ArithmeticParams& params,
                 const RuntimeShape& input1_shape, const int16_t* input1_data,
                 const RuntimeShape& input2_shape, const int16_t* input2_data,
-                const RuntimeShape& output_shape, int16_t* output_data) {
+                const RuntimeShape& output_shape, int16_t* output_data,
+                bool pot_scale = true) {
+  if (!pot_scale) {
+    AddGeneralParamScale(params, input1_shape, input1_data, input2_shape,
+                         input2_data, output_shape, output_data);
+    return;
+  }
+
   TFLITE_DCHECK_LE(params.quantized_activation_min,
                    params.quantized_activation_max);
 
@@ -169,27 +193,21 @@ inline void Add(const ArithmeticParams& params,
   }
 }
 
-// TODO(jiawen): We can implement BroadcastAdd on buffers of arbitrary
-// dimensionality if the runtime code does a single loop over one dimension
-// that handles broadcasting as the base case. The code generator would then
-// generate max(D1, D2) nested for loops.
-// TODO(benoitjacob): BroadcastAdd is intentionally duplicated from
-// reference_ops.h. Once an optimized version is implemented and NdArrayDesc<T>
-// is no longer referenced in this file, move NdArrayDesc<T> from types.h to
-// reference_ops.h.
-inline void BroadcastAdd4DSlow(const ArithmeticParams& params,
-                               const RuntimeShape& input1_shape,
-                               const float* input1_data,
-                               const RuntimeShape& input2_shape,
-                               const float* input2_data,
-                               const RuntimeShape& output_shape,
-                               float* output_data) {
+template <typename T>
+inline typename std::enable_if<!is_small_integer<T>::value, void>::type
+BroadcastAdd4DSlow(const ArithmeticParams& params,
+                   const RuntimeShape& input1_shape, const T* input1_data,
+                   const RuntimeShape& input2_shape, const T* input2_data,
+                   const RuntimeShape& output_shape, T* output_data) {
   NdArrayDesc<4> desc1;
   NdArrayDesc<4> desc2;
   NdArrayDescsForElementwiseBroadcast(input1_shape, input2_shape, &desc1,
                                       &desc2);
   const RuntimeShape extended_output_shape =
       RuntimeShape::ExtendedShape(4, output_shape);
+
+  T activation_min, activation_max;
+  GetActivationParams(params, &activation_min, &activation_max);
 
   // In Tensorflow, the dimensions are canonically named (batch_number, row,
   // col, channel), with extents (batches, height, width, depth), with the
@@ -207,64 +225,25 @@ inline void BroadcastAdd4DSlow(const ArithmeticParams& params,
       for (int x = 0; x < extended_output_shape.Dims(2); ++x) {
         for (int c = 0; c < extended_output_shape.Dims(3); ++c) {
           output_data[Offset(extended_output_shape, b, y, x, c)] =
-              ActivationFunctionWithMinMax(
+              ActivationFunctionWithMinMax<T>(
                   input1_data[SubscriptToIndex(desc1, b, y, x, c)] +
                       input2_data[SubscriptToIndex(desc2, b, y, x, c)],
-                  params.float_activation_min, params.float_activation_max);
+                  activation_min, activation_max);
         }
       }
     }
   }
 }
 
-inline void BroadcastAdd4DSlow(const ArithmeticParams& params,
-                               const RuntimeShape& input1_shape,
-                               const int32_t* input1_data,
-                               const RuntimeShape& input2_shape,
-                               const int32_t* input2_data,
-                               const RuntimeShape& output_shape,
-                               int32_t* output_data) {
-  NdArrayDesc<4> desc1;
-  NdArrayDesc<4> desc2;
-  NdArrayDescsForElementwiseBroadcast(input1_shape, input2_shape, &desc1,
-                                      &desc2);
-  const RuntimeShape extended_output_shape =
-      RuntimeShape::ExtendedShape(4, output_shape);
-
-  // In Tensorflow, the dimensions are canonically named (batch_number, row,
-  // col, channel), with extents (batches, height, width, depth), with the
-  // trailing dimension changing most rapidly (channels has the smallest stride,
-  // typically 1 element).
-  //
-  // In generated C code, we store arrays with the dimensions reversed. The
-  // first dimension has smallest stride.
-  //
-  // We name our variables by their Tensorflow convention, but generate C code
-  // nesting loops such that the innermost loop has the smallest stride for the
-  // best cache behavior.
-  for (int b = 0; b < extended_output_shape.Dims(0); ++b) {
-    for (int y = 0; y < extended_output_shape.Dims(1); ++y) {
-      for (int x = 0; x < extended_output_shape.Dims(2); ++x) {
-        for (int c = 0; c < extended_output_shape.Dims(3); ++c) {
-          output_data[Offset(extended_output_shape, b, y, x, c)] =
-              ActivationFunctionWithMinMax(
-                  input1_data[SubscriptToIndex(desc1, b, y, x, c)] +
-                      input2_data[SubscriptToIndex(desc2, b, y, x, c)],
-                  params.quantized_activation_min,
-                  params.quantized_activation_max);
-        }
-      }
-    }
-  }
-}
-
-inline void BroadcastAdd4DSlow(const ArithmeticParams& params,
-                               const RuntimeShape& input1_shape,
-                               const uint8_t* input1_data,
-                               const RuntimeShape& input2_shape,
-                               const uint8_t* input2_data,
-                               const RuntimeShape& output_shape,
-                               uint8_t* output_data) {
+// This function is used for 8-bit as well as for 16-bit, but the accumulator
+// is 32-bit for both cases. The overflow does not happen due to the
+// choice of the shift (20 or 15, accordingly - see add.cc for more comments).
+template <typename T>
+inline typename std::enable_if<is_small_integer<T>::value, void>::type
+BroadcastAdd4DSlow(const ArithmeticParams& params,
+                   const RuntimeShape& input1_shape, const T* input1_data,
+                   const RuntimeShape& input2_shape, const T* input2_data,
+                   const RuntimeShape& output_shape, T* output_data) {
   NdArrayDesc<4> desc1;
   NdArrayDesc<4> desc2;
   NdArrayDescsForElementwiseBroadcast(input1_shape, input2_shape, &desc1,
@@ -314,7 +293,7 @@ inline void BroadcastAdd4DSlow(const ArithmeticParams& params,
               std::min(params.quantized_activation_max,
                        std::max(params.quantized_activation_min, raw_output));
           output_data[Offset(extended_output_shape, b, y, x, c)] =
-              static_cast<uint8_t>(clamped_output);
+              static_cast<T>(clamped_output);
         }
       }
     }

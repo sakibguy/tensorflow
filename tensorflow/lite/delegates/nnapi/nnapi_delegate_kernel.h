@@ -111,6 +111,7 @@ struct NNAPIOpMappingArgs {
   TfLiteContext* context;
   NNAPIOpBuilder* builder;
   TfLiteNode* node;
+  int node_index;
   std::vector<int>* model_state_outputs;
   std::vector<int>* model_state_tfl_inputs;
   std::vector<std::tuple<int, int>>* feedback_loops;
@@ -153,6 +154,18 @@ class NNFreeExecution {
   // NnApi instance to use. Not owned by this object.
   const NnApi* nnapi_;
 };
+// RAII NN API Burst Destructor for use with std::unique_ptr
+class NNFreeBurst {
+ public:
+  explicit NNFreeBurst(const NnApi* nnapi) : nnapi_(nnapi) {}
+  void operator()(ANeuralNetworksBurst* model) {
+    nnapi_->ANeuralNetworksBurst_free(model);
+  }
+
+ private:
+  // NnApi instance to use. Not owned by this object.
+  const NnApi* nnapi_;
+};
 
 // Manage NNAPI shared memory handle
 class NNMemory {
@@ -163,6 +176,7 @@ class NNMemory {
 
   ANeuralNetworksMemory* get_handle() { return nn_memory_handle_; }
   uint8_t* get_data_ptr() { return data_ptr_; }
+  size_t get_byte_size() { return byte_size_; }
 
  private:
   // NnApi instance to use. Not owned by this object.
@@ -173,7 +187,7 @@ class NNMemory {
   ANeuralNetworksMemory* nn_memory_handle_ = nullptr;
 };
 
-
+// LINT.IfChange
 enum class NNAPIValidationFailureType : int {
   // The operator is not supported by either NNAPI or the NNAPI Delegate.
   kUnsupportedOperator = 0,
@@ -230,7 +244,7 @@ enum class NNAPIValidationFailureType : int {
   // for the accelerated operation.
   kUnsupportedQuantizationParameters = 15,
 };
-
+// LINT.ThenChange(nnapi_linter/linter.proto)
 
 struct NNAPIValidationFailure {
   NNAPIValidationFailureType type;
@@ -247,7 +261,9 @@ class NNAPIDelegateKernel {
       : initialised_(false),
         nnapi_(nnapi),
         nn_model_(nullptr, NNFreeModel(nnapi_)),
-        nn_compilation_(nullptr, NNFreeCompilation(nnapi_)) {}
+        nn_compilation_(nullptr, NNFreeCompilation(nnapi_)),
+        nn_burst_(nullptr, NNFreeBurst(nnapi_)),
+        nn_execution_(nullptr, NNFreeExecution(nnapi_)) {}
   NNAPIDelegateKernel() : NNAPIDelegateKernel(NnApiImplementation()) {}
   ~NNAPIDelegateKernel() {
     for (auto content : allocation_memory_mapping_) {
@@ -321,6 +337,11 @@ class NNAPIDelegateKernel {
   std::unique_ptr<ANeuralNetworksModel, NNFreeModel> nn_model_;
   std::unique_ptr<ANeuralNetworksCompilation, NNFreeCompilation>
       nn_compilation_;
+  std::unique_ptr<ANeuralNetworksBurst, NNFreeBurst> nn_burst_;
+  std::unique_ptr<ANeuralNetworksExecution, NNFreeExecution> nn_execution_;
+  // The mappings of tenor id to BufferHandle. Needed to track BufferHandle
+  // change and alter nn_reusable_execution_ if necessary.
+  std::vector<int> tensor_handle_map_;
   // Node indices that this delegate is responsible for. Indices here
   // indexes into the nodes array in the TfLiteContext.
   std::vector<int> nodes_;
@@ -352,7 +373,8 @@ class NNAPIDelegateKernel {
       const TfLiteContext* context, int builtin_code, const TfLiteNode* node,
       int tflite_node_index, NNAPIOpBuilder* builder, int* nnapi_errno);
 
-  TfLiteStatus AddOpsAndTensors(TfLiteContext* context, int* nnapi_errno);
+  TfLiteStatus AddOpsAndTensors(TfLiteContext* context, int* nnapi_errno,
+                                bool allow_dynamic_dimensions);
 
   TfLiteStatus BuildGraph(TfLiteContext* context,
                           const StatefulNnApiDelegate::Options& options,

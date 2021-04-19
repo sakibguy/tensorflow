@@ -15,30 +15,20 @@ limitations under the License.
 
 #include "tensorflow/lite/micro/kernels/kernel_util.h"
 
+#include "tensorflow/lite/c/common.h"
+
 namespace tflite {
 namespace micro {
 
-const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
-                                     const TfLiteNode* node, int index) {
-  return GetMutableEvalInput(context, node, index);
-}
-
-TfLiteEvalTensor* GetMutableEvalInput(const TfLiteContext* context,
-                                      const TfLiteNode* node, int index) {
-  TFLITE_DCHECK(context != nullptr);
-  TFLITE_DCHECK(node != nullptr);
-  return context->GetEvalTensor(context, node->inputs->data[index]);
-}
-
-TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
-                                const TfLiteNode* node, int index) {
-  TFLITE_DCHECK(context != nullptr);
-  TFLITE_DCHECK(node != nullptr);
-  return context->GetEvalTensor(context, node->outputs->data[index]);
+bool HaveSameShapes(const TfLiteEvalTensor* input1,
+                    const TfLiteEvalTensor* input2) {
+  TFLITE_DCHECK(input1 != nullptr);
+  TFLITE_DCHECK(input2 != nullptr);
+  return TfLiteIntArrayEqual(input1->dims, input2->dims);
 }
 
 const RuntimeShape GetTensorShape(const TfLiteEvalTensor* tensor) {
-  if (tensor == nullptr) {
+  if (tensor == nullptr || tensor->dims == nullptr) {
     return RuntimeShape();
   }
   TfLiteIntArray* dims = tensor->dims;
@@ -47,11 +37,40 @@ const RuntimeShape GetTensorShape(const TfLiteEvalTensor* tensor) {
   return RuntimeShape(dims_size, dims_data);
 }
 
-bool HaveSameShapes(const TfLiteEvalTensor* input1,
-                    const TfLiteEvalTensor* input2) {
-  TFLITE_DCHECK(input1 != nullptr);
-  TFLITE_DCHECK(input2 != nullptr);
-  return TfLiteIntArrayEqual(input1->dims, input2->dims);
+PaddingType RuntimePaddingType(TfLitePadding padding) {
+  switch (padding) {
+    case TfLitePadding::kTfLitePaddingSame:
+      return PaddingType::kSame;
+    case TfLitePadding::kTfLitePaddingValid:
+      return PaddingType::kValid;
+    case TfLitePadding::kTfLitePaddingUnknown:
+    default:
+      return PaddingType::kNone;
+  }
+}
+
+// Relocate tensor dims from FlatBuffer to the persistent storage arena.
+// The old dims data is copied to the new storage area.
+// The tensor and eval_tensor must be the same tensor.
+// Only use during Prepare phase.
+TfLiteStatus CreateWritableTensorDimsWithCopy(TfLiteContext* context,
+                                              TfLiteTensor* tensor,
+                                              TfLiteEvalTensor* eval_tensor) {
+  TF_LITE_ENSURE(context, tensor != nullptr);
+  TF_LITE_ENSURE(context, eval_tensor != nullptr);
+  int ranks = tensor->dims->size;
+  size_t alloc_size = TfLiteIntArrayGetSizeInBytes(ranks);
+  TfLiteIntArray* new_dims = static_cast<TfLiteIntArray*>(
+      context->AllocatePersistentBuffer(context, alloc_size));
+  TfLiteIntArray* old_dims = tensor->dims;
+  new_dims->size = ranks;
+  tensor->dims = new_dims;
+  eval_tensor->dims = new_dims;
+  for (int i = 0; i < ranks; i++) {
+    new_dims->data[i] = old_dims->data[i];
+  }
+
+  return kTfLiteOk;
 }
 
 }  // namespace micro

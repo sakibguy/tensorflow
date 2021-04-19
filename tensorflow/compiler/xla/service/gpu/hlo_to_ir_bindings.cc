@@ -83,6 +83,8 @@ void HloToIrBindings::EmitBasePointersForHlos(
           if (non_io_hlo->opcode() == HloOpcode::kConstant) {
             llvm::Value* global_for_constant = module_->getGlobalVariable(
                 llvm_ir::ConstantHloToGlobalName(*non_io_hlo));
+            CHECK(global_for_constant)
+                << llvm_ir::ConstantHloToGlobalName(*non_io_hlo);
             BindHloToIrValue(*non_io_hlo, global_for_constant);
           } else {
             llvm::Type* pointee_type =
@@ -117,11 +119,11 @@ static bool HasMeaningfulName(llvm::Value* value) {
   return false;
 }
 
-llvm::Value* HloToIrBindings::GetTypedIrValue(const HloInstruction& hlo,
-                                              ShapeIndexView shape_index,
-                                              llvm::Value* ir_value) {
-  llvm::Type* pointee_type = llvm_ir::ShapeToIrType(
-      ShapeUtil::GetSubshape(hlo.shape(), shape_index), module_);
+llvm::Value* CastToTypedValue(const Shape& shape, llvm::Value* ir_value,
+                              llvm::IRBuilder<>* b) {
+  llvm::Type* pointee_type =
+      llvm_ir::ShapeToIrType(shape, b->GetInsertBlock()->getModule());
+
   llvm::Type* dest_type = pointee_type->getPointerTo();
 
   llvm::Value* typed_ir_value;
@@ -129,9 +131,17 @@ llvm::Value* HloToIrBindings::GetTypedIrValue(const HloInstruction& hlo,
     typed_ir_value = llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
         llvm::cast<llvm::GlobalVariable>(ir_value), dest_type);
   } else {
-    typed_ir_value = b_->CreatePointerBitCastOrAddrSpaceCast(
+    typed_ir_value = b->CreatePointerBitCastOrAddrSpaceCast(
         ir_value, pointee_type->getPointerTo());
   }
+  return typed_ir_value;
+}
+
+llvm::Value* HloToIrBindings::GetTypedIrValue(const HloInstruction& hlo,
+                                              ShapeIndexView shape_index,
+                                              llvm::Value* ir_value) {
+  auto typed_ir_value = CastToTypedValue(
+      ShapeUtil::GetSubshape(hlo.shape(), shape_index), ir_value, b_);
   if (!HasMeaningfulName(ir_value)) {
     ir_value->setName(llvm_ir::IrName(&hlo, "raw"));
   }
@@ -156,49 +166,18 @@ void HloToIrBindings::BindHloToIrValue(const HloInstruction& hlo,
   *(base_ptrs_[&hlo].mutable_element(shape_index)) = typed_ir_value;
 }
 
-// Determines whether hlo's buffers are never modified within the execution of
-// consumer.
-static bool BuffersInvariantWithinConsumer(
-    const HloInstruction& hlo, const HloInstruction& consumer,
-    const BufferAssignment* buffer_assignment) {
-  // Check if consumer is inside a fusion node -- if so, "dereference" it until
-  // we get to a non-fusion node.
-  const HloInstruction* c = &consumer;
-  while (c->IsFused()) {
-    c = c->parent()->FusionInstruction();
-  }
-
-  // If, after dereferencing c, we end up with a node that's not inside our
-  // module's top-level computation (say our node is inside a while loop), we
-  // give up on marking array as invariant, because this HLO may be run multiple
-  // times (e.g. multiple while loop iterations, or multiple invocations of a
-  // reducer's computation).  TODO(jlebar): We could relax this constraint if we
-  // emitted an llvm.invariant.group.barrier at the end of the computation.
-  return c->parent() == c->GetModule()->entry_computation() &&
-         buffer_assignment->HaveDisjointSlices(&hlo, &consumer);
-}
-
 llvm_ir::IrArray HloToIrBindings::GetIrArray(const HloInstruction& hlo,
                                              const HloInstruction& consumer,
                                              const ShapeIndex& shape_index) {
+  CHECK(is_nested_)
+      << "IrEmitterUnnested should instead use LMHLO to get the IrArray";
+
   llvm::Value* base_ptr = GetBasePointer(hlo, shape_index);
   CHECK_NE(base_ptr, nullptr)
       << "Buffer not assigned for shape_index " << shape_index.ToString()
       << " of " << hlo.ToString();
   llvm_ir::IrArray ir_array(base_ptr,
                             ShapeUtil::GetSubshape(hlo.shape(), shape_index));
-
-  // The GPU backend emits one kernel per top-level HLO, and LLVM views
-  // execution of one kernel as the "whole program" executed on the GPU.
-  // Therefore if hlo's output buffer is not modified within consumer, and if
-  // consumer runs hlo only once (so that it doesn't create two different
-  // outputs), then we can mark ir_array as invariant over the whole program.
-  if (!is_nested_ &&
-      BuffersInvariantWithinConsumer(hlo, consumer, buffer_assignment_)) {
-    VLOG(2) << "Marking " << hlo.name() << " as invariant within "
-            << consumer.name();
-    ir_array.MarkInvariantOverWholeProgram(&module_->getContext());
-  }
 
   return ir_array;
 }

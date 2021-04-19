@@ -32,7 +32,7 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/selective_registration.h"
+#include "tensorflow/core/framework/registration/registration.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/gtl/flatmap.h"
 #include "tensorflow/core/lib/hash/hash.h"
@@ -123,6 +123,11 @@ class FunctionDefHelper {
   // Node is used to construct FunctionDef.Node using initialization
   // lists. E.g.,
   //  Node n = {{"z"}, "Mul", {"x", "y"}, {{"T", "$T"}}};  // z = x * y
+  //
+  // If the op has no inputs, then name is be specified.
+  //  Node n = {{}, "AssignVariable", {"resource", "val"}, {{"dtype",
+  //  "DT_FLOAT"},
+  //            {"update0"}, "CPU:0", "update1"}}
   struct Node {
     // When constructing a NodeDef, the first entry in ret is used as
     // the node name, the remaining values are ignored.
@@ -132,6 +137,16 @@ class FunctionDefHelper {
     std::vector<std::pair<string, AttrValueWrapper>> attr;
     std::vector<string> dep;
     std::string device;
+
+    // Required if the op has zero outputs. Otherwise, ret[0] used as name if
+    // name is left empty.
+    std::string name;
+
+    std::string GetName() const {
+      if (!name.empty()) return name;
+      CHECK(!ret.empty());
+      return ret[0];
+    }
 
     NodeDef ToNodeDef() const;
   };
@@ -330,6 +345,35 @@ class FunctionCallFrame : public CallFrameInterface {
   TF_DISALLOW_COPY_AND_ASSIGN(FunctionCallFrame);
 };
 
+// Language agnostic stack traces.
+class AbstractStackTrace {
+ public:
+  struct TracePrintingOptions {
+    // Show inline the contents of each stack line.
+    bool show_line_contents = false;
+
+    // Drop the common largest prefix of all filenames in stack frames.
+    bool filter_common_prefix = false;
+
+    // Do not show internal frames.
+    bool drop_internal_frames = false;
+  };
+
+  virtual ~AbstractStackTrace() {}
+
+  // The returned span is alive as long as the AbstractStackTrace is alive.
+  virtual absl::Span<StackFrame const> ToFrames() const = 0;
+
+  // Returns the last stack frame from user code, attempting to ignore the
+  // framework code. Returns an empty frame if no such stack frame was found.
+  virtual StackFrame LastUserFrame() const = 0;
+  virtual std::string ToString(const TracePrintingOptions& opts) const = 0;
+};
+
+using StackTracesMap =
+    std::unordered_map<std::string,
+                       std::shared_ptr<tensorflow::AbstractStackTrace>>;
+
 // Helper to maintain a map between function names in a given
 // FunctionDefLibrary and function definitions.
 //
@@ -375,7 +419,12 @@ class FunctionLibraryDefinition : public OpRegistryInterface {
   // If 'fdef' is successfully added to the library, it will be accessible
   // from 'LookUp' and included in the proto returned by 'ToProto'.
   // This operation is atomic.
-  Status AddFunctionDef(const FunctionDef& fdef) TF_LOCKS_EXCLUDED(mu_);
+  //
+  // Associates `graph` with a function `func_name`. Lifetime assumption:
+  // `graph` has to outlive all instantiated graphs.
+  Status AddFunctionDef(const FunctionDef& fdef,
+                        const StackTracesMap& stack_traces = {})
+      TF_LOCKS_EXCLUDED(mu_);
 
   // Adds gradient definition 'grad' to this function library.
   // This is a no-op if 'grad' already exists in this function library.
@@ -388,7 +437,8 @@ class FunctionLibraryDefinition : public OpRegistryInterface {
   // a non-OK status if "func" was not found in the library, OK otherwise.
   // Please be careful when replacing function: make sure all previous pointers
   // returned by `Find()` are no longer in use.
-  Status ReplaceFunction(const std::string& func, const FunctionDef& fdef)
+  Status ReplaceFunction(const std::string& func, const FunctionDef& fdef,
+                         const StackTracesMap& stack_traces = {})
       TF_LOCKS_EXCLUDED(mu_);
 
   // Replaces the gradient corresponding to `grad.function_name()`. Returns
@@ -402,6 +452,9 @@ class FunctionLibraryDefinition : public OpRegistryInterface {
   // nodes using the function, and all previous pointers returned by `Find()`
   // are no longer in use.
   Status RemoveFunction(const std::string& func) TF_LOCKS_EXCLUDED(mu_);
+
+  // Removes all the functions and gradient functions.
+  void Clear() TF_LOCKS_EXCLUDED(mu_);
 
   // Adds the functions and gradients in 'other' to this function library.
   // Duplicate functions and gradients are ignored.
@@ -481,14 +534,28 @@ class FunctionLibraryDefinition : public OpRegistryInterface {
                              const FunctionLibraryDefinition& other)
       TF_LOCKS_EXCLUDED(mu_);
 
+  // Returns graph with debug stack traces for the given function, or `nullptr`
+  // if none found.
+  const StackTracesMap& GetStackTraces(const std::string& func_name) const {
+    tf_shared_lock l(mu_);
+    std::shared_ptr<FunctionDefAndOpRegistration> entry = FindHelper(func_name);
+    if (entry) {
+      return entry->stack_traces;
+    }
+    static const auto* empty_map = new StackTracesMap;
+    return *empty_map;
+  }
+
  private:
   // Shape inference for functions is handled separately by ShapeRefiner.
 
   struct FunctionDefAndOpRegistration {
-    explicit FunctionDefAndOpRegistration(const FunctionDef& fdef_in);
+    explicit FunctionDefAndOpRegistration(
+        const FunctionDef& fdef_in, const StackTracesMap& stack_traces = {});
 
     const FunctionDef fdef;
     const OpRegistrationData op_registration_data;
+    const StackTracesMap stack_traces;
   };
 
   std::shared_ptr<FunctionDefAndOpRegistration> FindHelper(
@@ -501,7 +568,8 @@ class FunctionLibraryDefinition : public OpRegistryInterface {
 
   // Same as AddFunctionDef/AddGradientDef except these methods set
   // `added` to true if the `fdef`/`grad` were actually added to this.
-  Status AddFunctionDefHelper(const FunctionDef& fdef, bool* added)
+  Status AddFunctionDefHelper(const FunctionDef& fdef,
+                              const StackTracesMap& stack_traces, bool* added)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
   Status AddGradientDefHelper(const GradientDef& grad, bool* added)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
@@ -612,6 +680,9 @@ class FunctionLibraryRuntime {
     // infer correct device.
     std::vector<string> output_devices;
 
+    // If set, it indicates the original output indices of a component function.
+    absl::optional<std::vector<int>> ret_indices = absl::nullopt;
+
     // Maps from a CompositeDevice name to a list of underlying physical
     // devices.
     absl::flat_hash_map<string, const std::vector<string>*> composite_devices;
@@ -681,6 +752,9 @@ class FunctionLibraryRuntime {
     // `FunctionLibraryRuntime::DebugString(handle)` contains the optimized
     // Graph. Otherwise, the unoptimized function Graph will be returned.
     bool include_optimized_graph_in_debug_string = false;
+
+    // If true, the function library runtime cache the function instantiation.
+    bool use_function_cache = false;
   };
   typedef uint64 Handle;
   virtual Status Instantiate(const std::string& function_name, AttrSlice attrs,
@@ -860,13 +934,12 @@ std::string GetFunctionResourceInputDevice(
     const Tensor& input, const int arg_index, const FunctionDef& function_def,
     absl::flat_hash_map<string, std::vector<string>>* composite_devices);
 
-// Returns a canonicalized string for the instantiation of the
-// function of the given "name", attributes "attrs", and "options".
+// Returns a canonicalized string for the instantiation of the function of the
+// given "name", attributes "attrs", and "options".
 //
-// The returned string is guaranteed to be stable within one address
-// space. But it may be change as the implementation
-// evolves. Therefore, it should not be persisted or compared across
-// address spaces.
+// The returned string is guaranteed to be stable within one address space. But
+// it may be change as the implementation evolves. Therefore, it should not be
+// persisted or compared across address spaces.
 std::string Canonicalize(
     const std::string& funcname, AttrSlice attrs,
     const FunctionLibraryRuntime::InstantiateOptions& options);
@@ -901,6 +974,9 @@ typedef
         FunctionArg;
 #endif
 
+// Either a local tensor or the shape of a remote tensor.
+typedef absl::variant<Tensor, TensorShape> FunctionRet;
+
 // Used to instantiate and run functions in a distributed system.
 class DistributedFunctionLibraryRuntime {
  public:
@@ -929,14 +1005,15 @@ class DistributedFunctionLibraryRuntime {
 
   // Run an instantiated remote function (specified by `handle`) with a list of
   // input Tensors or RemoteTensorHandles as `args` and get its output Tensors
-  // in `rets`. When using RemoteTensorHandles as function inputs, the
-  // corresponding tensor data will be resolved on the remote worker, so it is
-  // not required to be locally available on the caller side. Using
-  // RemoteTensorHandle inputs is not supported in TensorFlow v1 runtime.
-  // TODO(yujingzhang): Support outputting tensors on remote devices.
+  // or TensorShapes in `rets`. When using RemoteTensorHandles as function
+  // inputs or TensorShapes as outputs, the corresponding tensor data will be
+  // resolved on the remote worker, so it is not required to be locally
+  // available on the caller side. Using RemoteTensorHandle inputs is not
+  // supported in TensorFlow v1 runtime.
   virtual void Run(const FunctionLibraryRuntime::Options& opts,
                    FunctionLibraryRuntime::LocalHandle handle,
-                   gtl::ArraySlice<FunctionArg> args, std::vector<Tensor>* rets,
+                   gtl::ArraySlice<FunctionArg> args,
+                   std::vector<FunctionRet>* rets,
                    FunctionLibraryRuntime::DoneCallback done) = 0;
 
   // Clean up a previously instantiated function on remote worker.

@@ -27,6 +27,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/service/call_graph.h"
 #include "tensorflow/compiler/xla/service/computation_layout.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
@@ -303,7 +304,8 @@ class LayoutAssignment : public HloModulePass {
       ComputationLayout* entry_computation_layout,
       std::function<bool(const HloInstruction*)>
           instruction_can_change_layout_func = InstructionCanChangeLayout,
-      ChannelLayoutConstraints* channel_constraints = nullptr);
+      ChannelLayoutConstraints* channel_constraints = nullptr,
+      bool reverse_computation_order = false);
   ~LayoutAssignment() override {}
   absl::string_view name() const override { return "layout-assignment"; }
 
@@ -338,6 +340,9 @@ class LayoutAssignment : public HloModulePass {
       const ResultLayoutConstraint& layout_constraint,
       LayoutConstraints* constraints);
 
+  virtual Layout GetUnconstrainedLayout(const LogicalBuffer& buffer) {
+    return LayoutUtil::GetDefaultLayoutForShape(buffer.shape());
+  }
   // Called after layouts of an instruction have been finalized to allow
   // subclasses to check for platform specific assumptions.
   virtual Status Verify(const HloInstruction* instruction) {
@@ -449,6 +454,8 @@ class LayoutAssignment : public HloModulePass {
   // A copy of entry_computation_layout_ used to reset it to the initial values
   // during the multiple passes done by the layout assignment operation.
   ComputationLayout saved_entry_computation_layout_;
+  // If set true, reverse the computation traversal order when assigning layout.
+  bool reverse_computation_order_;
 
  protected:
   // Sets up the copy instruction according to the characteristic (sharding,

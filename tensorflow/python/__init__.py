@@ -38,6 +38,7 @@ import traceback
 # pylint: disable=wildcard-import,g-bad-import-order,g-import-not-at-top
 
 from tensorflow.python.eager import context
+from tensorflow.python import pywrap_tensorflow as _pywrap_tensorflow
 
 # pylint: enable=wildcard-import
 
@@ -67,6 +68,7 @@ from tensorflow.python.ops.linalg.sparse import sparse
 from tensorflow.python.ops.losses import losses
 from tensorflow.python.ops.ragged import ragged_ops as _ragged_ops
 from tensorflow.python.ops.signal import signal
+from tensorflow.python.ops.structured import structured_ops as _structured_ops
 from tensorflow.python.profiler import profiler
 from tensorflow.python.profiler import profiler_client
 from tensorflow.python.profiler import profiler_v2
@@ -101,7 +103,7 @@ from tensorflow.python.platform import flags
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.platform import resource_loader
-from tensorflow.python.platform import sysconfig
+from tensorflow.python.platform import sysconfig as sysconfig_lib
 from tensorflow.python.platform import test
 
 from tensorflow.python.compat import v2_compat

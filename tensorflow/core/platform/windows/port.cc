@@ -49,7 +49,13 @@ string Hostname() {
   return name;
 }
 
-string JobName() { return ""; }
+string JobName() {
+  const char* job_name_cs = std::getenv("TF_JOB_NAME");
+  if (job_name_cs != nullptr) {
+    return string(job_name_cs);
+  }
+  return "";
+}
 
 int NumSchedulableCPUs() {
   SYSTEM_INFO system_info;
@@ -194,6 +200,11 @@ MemoryInfo GetMemoryInfo() {
     mem_info.total = statex.ullTotalPhys;
   }
   return mem_info;
+}
+
+MemoryBandwidthInfo GetMemoryBandwidthInfo() {
+  MemoryBandwidthInfo membw_info = {INT64_MAX};
+  return membw_info;
 }
 
 int NumHyperthreadsPerCore() {

@@ -19,8 +19,8 @@ limitations under the License.
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/DialectImplementation.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
 
 namespace mlir {
@@ -28,15 +28,16 @@ namespace mlir {
 namespace xla_thunks {
 
 XLAThunksDialect::XLAThunksDialect(MLIRContext *context)
-    : Dialect(getDialectNamespace(), context) {
+    : Dialect(getDialectNamespace(), context, TypeID::get<XLAThunksDialect>()) {
   addOperations<
 #define GET_OP_LIST
 #include "tensorflow/compiler/xla/service/gpu/ir/xla_thunks_ops.cc.inc"
       >();
 }
 
+}  // namespace xla_thunks
+
 #define GET_OP_CLASSES
 #include "tensorflow/compiler/xla/service/gpu/ir/xla_thunks_ops.cc.inc"
 
-}  // namespace xla_thunks
 }  // namespace mlir

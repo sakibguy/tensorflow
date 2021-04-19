@@ -61,7 +61,13 @@ string Hostname() {
   return string(hostname);
 }
 
-string JobName() { return ""; }
+string JobName() {
+  const char* job_name_cs = std::getenv("TF_JOB_NAME");
+  if (job_name_cs != nullptr) {
+    return string(job_name_cs);
+  }
+  return "";
+}
 
 int NumSchedulableCPUs() {
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -361,6 +367,11 @@ MemoryInfo GetMemoryInfo() {
   }
 #endif
   return mem_info;
+}
+
+MemoryBandwidthInfo GetMemoryBandwidthInfo() {
+  MemoryBandwidthInfo membw_info = {INT64_MAX};
+  return membw_info;
 }
 
 }  // namespace port

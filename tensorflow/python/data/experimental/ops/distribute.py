@@ -19,6 +19,7 @@ from __future__ import print_function
 
 import numpy as np
 
+from tensorflow.python.compat import compat as tf_compat
 from tensorflow.python.data.experimental.ops.distribute_options import ExternalStatePolicy
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.util import nest
@@ -29,28 +30,49 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_experimental_dataset_ops as ged_ops
+from tensorflow.python.util.tf_export import tf_export
+
+SHARD_HINT = -1
+tf_export("data.experimental.SHARD_HINT").export_constant(
+    __name__, "SHARD_HINT")
 
 
 class _AutoShardDataset(dataset_ops.UnaryDataset):
   """A `Dataset` that shards the `Dataset` automatically.
 
   This dataset takes in an existing dataset and tries to automatically figure
-  out how to shard the dataset in a multi-worker scenario. Currently, it uses
-  Grappler to walk up the dataset graph until it finds a reader dataset (e.g.
-  CSVDataset, TFRecordDataset), then inserts a ShardDataset op before that node
+  out how to shard the dataset in a multi-worker scenario using graph rewrites.
+
+  If the AutoShardPolicy is set to FILE, it walks up the dataset graph until
+  it finds a reader dataset, then inserts a ShardDataset op before that node
   so that each worker only sees some files.
 
-  Args:
+  If the AutoShardPolicy is set to DATA, it inserts a ShardDataset op at the
+  end of the input pipeline, before any terminal PrefetchDataset if there is
+  one. Additionally, if there is a RebatchDatasetV2 in the input pipeline, it
+  is written to legacy RebatchDataset for correctness reasons, since
+  RebatchDatasetV2 is incompatible with data sharding.
+
+  If the AutoShardPolicy is set to AUTO, it tries to do file-based sharding.
+  If it cannot find a reader dataset, it falls back to doing data-based
+  sharding.
+
+  If the AutoShardPolicy is set to OFF, it does nothing.
+
+  Attributes:
     num_workers: Total number of workers to shard this dataset across.
     index: The current worker index (out of the total number of workers) this
       dataset is for.
+    num_replicas: The total number of replicas across all workers. This is used
+      only when sharding by data (either DATA or AUTO) in order to rewrite
+      RebatchDatasetV2 to RebatchDataset.
 
   Raises:
     NotFoundError: If we cannot find a suitable reader dataset to begin
       automatically sharding the dataset.
   """
 
-  def __init__(self, input_dataset, num_workers, index):
+  def __init__(self, input_dataset, num_workers, index, num_replicas=None):
     self._input_dataset = input_dataset
 
     self._element_spec = input_dataset.element_spec
@@ -60,6 +82,7 @@ class _AutoShardDataset(dataset_ops.UnaryDataset):
         index=index,
         auto_shard_policy=int(
             input_dataset.options().experimental_distribute.auto_shard_policy),
+        num_replicas=num_replicas,
         **self._flat_structure)
     super(_AutoShardDataset, self).__init__(input_dataset, variant_tensor)
 
@@ -68,9 +91,9 @@ class _AutoShardDataset(dataset_ops.UnaryDataset):
     return self._element_spec
 
 
-def _AutoShardDatasetV1(input_dataset, num_workers, index):  # pylint: disable=invalid-name
+def _AutoShardDatasetV1(input_dataset, num_workers, index, num_replicas=None):  # pylint: disable=invalid-name
   return dataset_ops.DatasetV1Adapter(
-      _AutoShardDataset(input_dataset, num_workers, index))
+      _AutoShardDataset(input_dataset, num_workers, index, num_replicas))
 
 
 class _RebatchDataset(dataset_ops.UnaryDataset):
@@ -313,12 +336,22 @@ def replicate(dataset, devices):
     return datasets
 
   with ops.colocate_with(dataset._variant_tensor):
+    # We apply options before replicating the dataset because options are
+    # currently not automatically preserved through dataset serialization and
+    # thus an explicit application of options here is needed to avoid losing
+    # `dataset` options.
+    #
+    # TODO(b/183497230): Move options application after deserialization.
     dataset = dataset._apply_options()
-    policy = dataset.options().experimental_external_state_policy
-    if policy is None:
+    if tf_compat.forward_compatible(2021, 4, 25):
       policy = ExternalStatePolicy.WARN
+    else:
+      policy = dataset.options().experimental_external_state_policy
+      if policy is None:
+        policy = ExternalStatePolicy.WARN
     graph_def = dataset._as_serialized_graph(
-        strip_device_assignment=True, external_state_policy=policy)
+        strip_device_assignment=True,
+        external_state_policy=policy)
   for device in devices:
     ds = _RemoteDataset(graph_def, device, dataset.element_spec)
     datasets[device] = ds
@@ -412,6 +445,13 @@ def batch_sizes_for_worker(global_batch_size, num_workers,
   # Constraint (A)
   num_subbatches = num_workers * num_replicas_per_worker
 
+  offset = worker_index * num_replicas_per_worker
+
+  const_value = tensor_util.constant_value(global_batch_size)
+  if const_value is not None:
+    # Use the constant global batch size for further calculations
+    global_batch_size = const_value
+
   # Let N = W * R. Constraint (B) and (D) jointly mean that the iterations
   # should have batch size either floor(B/N) or ceil(B/N). Namely, of the N
   # subbatches a batch is split into, B - N * floor(B/N) of them will have size
@@ -422,6 +462,16 @@ def batch_sizes_for_worker(global_batch_size, num_workers,
   # For worker 0, we assign the first num_ceil subbatches to have size
   # ceil(B/N), and the remainder to have size floor(B/N). The other workers will
   # each be offset by R * worker_index in order to meet constraint (C).
+  if const_value is not None:
+    # If the global batch size is a known constant value, we return a constant
+    # tensor directly instead of manipulating it with TF ops. This allows for
+    # better downstream shape inference.
+    worker_0 = [floor + 1] * num_ceil + [floor] * (num_subbatches - num_ceil)
+    return ops.convert_to_tensor(
+        worker_0[offset:] + worker_0[:offset],
+        dtype=dtypes.int64,
+        name="batch_sizes")
+
   worker_0 = array_ops.ones(num_subbatches, dtype=dtypes.int64)
   worker_0 = floor * worker_0 + array_ops.concat([
       array_ops.ones(num_ceil, dtype=dtypes.int64),
@@ -429,7 +479,6 @@ def batch_sizes_for_worker(global_batch_size, num_workers,
   ],
                                                  axis=0)
 
-  offset = worker_index * num_replicas_per_worker
   return array_ops.concat([worker_0[offset:], worker_0[:offset]], axis=0)
 
 

@@ -16,24 +16,39 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_MICRO_KERNELS_KERNEL_UTIL_H_
 #define TENSORFLOW_LITE_MICRO_KERNELS_KERNEL_UTIL_H_
 
+#include <cstdint>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/types.h"
 
 namespace tflite {
 namespace micro {
 
-// Returns the TfLiteEvalTensor struct for a given input index in a node.
-const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
-                                     const TfLiteNode* node, int index);
-
 // Returns a mutable tensor for a given input index. is_variable must be checked
 // during prepare when the full TfLiteTensor is available.
-TfLiteEvalTensor* GetMutableEvalInput(const TfLiteContext* context,
-                                      const TfLiteNode* node, int index);
+inline TfLiteEvalTensor* GetMutableEvalInput(const TfLiteContext* context,
+                                             const TfLiteNode* node,
+                                             int index) {
+  TFLITE_DCHECK(context != nullptr);
+  TFLITE_DCHECK(node != nullptr);
+  return context->GetEvalTensor(context, node->inputs->data[index]);
+}
+
+// Returns the TfLiteEvalTensor struct for a given input index in a node.
+inline const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
+                                            const TfLiteNode* node, int index) {
+  return GetMutableEvalInput(context, node, index);
+}
 
 // Returns the TfLiteEvalTensor struct for a given output index in a node.
-TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
-                                const TfLiteNode* node, int index);
+inline TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
+                                       const TfLiteNode* node, int index) {
+  TFLITE_DCHECK(context != nullptr);
+  TFLITE_DCHECK(node != nullptr);
+  return context->GetEvalTensor(context, node->outputs->data[index]);
+}
 
 // Returns data for a TfLiteEvalTensor struct.
 template <typename T>
@@ -54,6 +69,16 @@ const RuntimeShape GetTensorShape(const TfLiteEvalTensor* tensor);
 // Return true if the given tensors have the same shape.
 bool HaveSameShapes(const TfLiteEvalTensor* input1,
                     const TfLiteEvalTensor* input2);
+
+PaddingType RuntimePaddingType(TfLitePadding padding);
+
+// Relocate tensor dims from FlatBuffer to the persistent storage arena.
+// The old dims data is copied to the new storage area.
+// The tensor and eval_tensor must be the same tensor.
+// Only use during Prepare phase.
+TfLiteStatus CreateWritableTensorDimsWithCopy(TfLiteContext* context,
+                                              TfLiteTensor* tensor,
+                                              TfLiteEvalTensor* eval_tensor);
 
 }  // namespace micro
 }  // namespace tflite

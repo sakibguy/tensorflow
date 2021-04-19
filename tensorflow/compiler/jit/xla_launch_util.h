@@ -109,12 +109,16 @@ Status SnapshotResourceVariables(OpKernelContext* ctx,
 Status LockVariables(absl::Span<VariableInfo> variables)
     TF_EXCLUSIVE_LOCK_FUNCTION();
 
-// Returns a vector of VariableInfo instances for the resource variable inputs
-// to the kernel with context `ctx`.  The input indices for the resource
+// Returns a vector of VariableInfo instances for the resource variable inputs,
+// given that *all* inputs are in `inputs`. The input indices for the resource
 // variable inputs are in `variable_indices`.
-Status GetVariableInfosFromCtxInputs(OpKernelContext* ctx,
-                                     absl::Span<const int> variable_indices,
-                                     std::vector<VariableInfo>* result);
+Status GetVariableInfosFromInputs(ResourceMgr* rm, DeviceBase* dev,
+                                  absl::Span<const Tensor* const> inputs,
+                                  absl::Span<const int> variable_indices,
+                                  std::vector<VariableInfo>* result);
+
+// Returns pointers to inputs stored in `ctx`.
+std::vector<const Tensor*> InputsFromContext(OpKernelContext* ctx);
 
 // Helper class to perform the marshalling of TensorFlow inputs and outputs to
 // ShapedBuffers suitable for passing to an XLA computation.
@@ -136,10 +140,11 @@ class XlaComputationLaunchContext {
   // Builds a XlaCompiler::Argument vector from the arguments to an XlaLaunch
   // op.
   // Precondition: variables in `variable_args` are locked.
-  static Status BuildXlaCompilerArguments(
-      const std::map<int, Tensor>& constant_args,
-      absl::Span<VariableInfo const> variable_args, OpKernelContext* ctx,
-      std::vector<XlaCompiler::Argument>* args);
+  static xla::StatusOr<std::vector<XlaCompiler::Argument>>
+  BuildXlaCompilerArguments(absl::Span<int const> must_be_constant_idxs,
+                            absl::Span<const Tensor* const> inputs,
+                            absl::Span<VariableInfo const> variable_args,
+                            Device* device);
 
   // Add all inputs within `ctx` as XLA arguments (returned by arguments()).
   // `variables` is a map from TensorFlow argument number to resource variable.
@@ -203,7 +208,20 @@ class XlaTensorBuffer : public TensorBuffer {
   TensorBuffer* root_buffer() override { return this; }
 
   void FillAllocationDescription(AllocationDescription* proto) const override {
-    proto->set_allocated_bytes(actual_size_);
+    proto->set_requested_bytes(static_cast<int64>(expected_size_));
+    proto->set_allocator_name(allocator_->Name());
+    proto->set_ptr(reinterpret_cast<uintptr_t>(data()));
+    if (allocator_->TracksAllocationSizes()) {
+      auto ab = static_cast<int64>(allocator_->AllocatedSize(data()));
+      proto->set_allocated_bytes(ab);
+      int64 id = allocator_->AllocationId(data());
+      if (id > 0) {
+        proto->set_allocation_id(id);
+      }
+      if (RefCountIsOne()) {
+        proto->set_has_single_reference(true);
+      }
+    }
   }
 
  private:

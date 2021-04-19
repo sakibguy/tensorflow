@@ -34,8 +34,10 @@ limitations under the License.
 #include "tensorflow/stream_executor/tpu/tpu_executor_interface.h"
 #include "tensorflow/stream_executor/tpu/tpu_platform.h"
 #include "tensorflow/stream_executor/tpu/tpu_platform_interface.h"
+#include "tensorflow/stream_executor/tpu/tpu_stream.h"
 
 namespace tensorflow {
+namespace tpu {
 
 class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
  public:
@@ -96,10 +98,11 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
   void DequeueOutfeed(int32 outfeed_queue_index, absl::Span<uint8> bytes,
                       StatusCallback done);
 
-  Status EnqueueInfeed(int32 infeed_queue_index,
-                       absl::Span<const uint8> bytes);
+  Status EnqueueInfeed(int32 infeed_queue_index, absl::Span<const uint8> bytes);
 
   absl::optional<stream_executor::AllocatorStats> GetAllocatorStats() override;
+
+  tpu::TpuCoreLocationExternal GetCoreLocationExternal() const override;
 
   Status GetStatus(Stream* stream) override;
 
@@ -152,6 +155,10 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
 
   Status WaitForOutfeedReady(int32 outfeed_queue_index);
 
+  Status UnloadAllPrograms() override;
+
+  Status EnqueueCompactionOnStreamForHbm(Stream* compaction_stream) override;
+
   const ::tensorflow::tpu::TpuPlatformInterface& platform() const override {
     return *platform_;
   }
@@ -175,10 +182,6 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
     LOG(FATAL) << "Not yet implemented";
   }
 
-  stream_executor::SharedMemoryConfig GetDeviceSharedMemoryConfig() override {
-    LOG(FATAL) << "not yet implemented";
-  }
-
   void* GetSubBuffer(DeviceMemoryBase* parent, uint64 offset,
                      uint64 size) override {
     LOG(FATAL) << "not yet implemented";
@@ -197,10 +200,7 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
   bool CanEnablePeerAccessTo(StreamExecutorInterface* other) override {
     LOG(FATAL) << "not yet implemented";
   }
-  Status SetDeviceSharedMemoryConfig(
-      stream_executor::SharedMemoryConfig config) override {
-    LOG(FATAL) << "not yet implemented";
-  }
+
   void* HostMemoryAllocate(uint64 size) override {
     LOG(FATAL) << "not yet implemented";
   }
@@ -232,11 +232,17 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
     return *(tpu_platform().stream_map());
   }
 
+  SE_Stream* get_stream(StreamInterface* ptr) {
+    tensorflow::mutex_lock m(tpu_platform().mutex());
+    return stream_map()[ptr];
+  }
+
   TimerMap timer_map_;
   tensorflow::tpu::TpuPlatformInterface* platform_;
   SE_StreamExecutor* executor_;
 };
 
+}  // namespace tpu
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_STREAM_EXECUTOR_TPU_TPU_EXECUTOR_H_

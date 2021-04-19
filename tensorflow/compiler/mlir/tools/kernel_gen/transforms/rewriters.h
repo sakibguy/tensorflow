@@ -16,20 +16,42 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TRANSFORMS_REWRITERS_H_
 #define TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TRANSFORMS_REWRITERS_H_
 
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+
 namespace mlir {
 
+class BufferizeTypeConverter;
 class LLVMTypeConverter;
-class LowerToLLVMOptions;
-class OwningRewritePatternList;
+class MLIRContext;
+class RewritePatternSet;
+class TypeConverter;
 
 namespace kernel_gen {
 namespace tf_framework {
 
-/// Collect a set of patterns to convert from the TF Framework dialect to LLVM.
+/// Collects a set of patterns to convert from the TF Framework dialect to LLVM.
 void PopulateTFFrameworkToLLVMConversionPatterns(
-    LLVMTypeConverter *converter, OwningRewritePatternList *patterns);
+    LLVMTypeConverter *converter, RewritePatternSet *patterns);
+
+/// Collects a set of patterns to rewrite functions for use with TF framework
+/// and also replace `alloc` and correspondign free operations with .
+void PopulateEmbedTFFrameworkFunctionAndAllocConversionPatterns(
+    MLIRContext *context, RewritePatternSet *patterns);
+
+/// Collects a set of patterns to embed TF Framework.
+void PopulateEmbedTFFrameworkAssertConversionPatterns(
+    MLIRContext *context, RewritePatternSet *patterns);
 
 }  // namespace tf_framework
+
+namespace transforms {
+
+/// Collects a set of patterns that bufferize operations from the standard
+/// dialect.
+void populateExtraStdBufferizePattern(MLIRContext *context,
+                                      BufferizeTypeConverter *converter,
+                                      RewritePatternSet *patterns);
+}  // namespace transforms
 }  // namespace kernel_gen
 }  // namespace mlir
 
