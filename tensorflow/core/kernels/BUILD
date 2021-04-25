@@ -5904,7 +5904,7 @@ filegroup(
         "variable_ops.cc",
         "variable_ops.h",
     ] + [
-        "//tensorflow/c/kernels:android_all_op_kernels",
+        "//tensorflow/c/kernels:portable_all_op_kernels",
         "//tensorflow/core/kernels/image:non_max_suppression_op.cc",
         "//tensorflow/core/kernels/image:non_max_suppression_op.h",
     ],
@@ -6341,6 +6341,8 @@ filegroup(
         "xent_op.cc",
     ] + [
         "//tensorflow/core/kernels/boosted_trees:quantile_ops.cc",
+        # TODO(b/185903858): This should not be needed since this is part of tensorflow/core/kernels/data/experimental:portable_all_op_kernels.
+        "//tensorflow/core/kernels/data/experimental:lookup_ops.cc",
         "//tensorflow/core/kernels/data:batch_dataset_op.cc",
         "//tensorflow/core/kernels/data:iterator_ops.cc",
         "//tensorflow/core/kernels/data:map_dataset_op.cc",
@@ -6429,8 +6431,8 @@ ANDROID_TEXTUAL_HDRS = [
 filegroup(
     name = "portable_all_ops",
     srcs = [
-        "//tensorflow/c/kernels:android_all_op_kernels",
-        "//tensorflow/core/kernels/data:android_all_op_kernels",
+        "//tensorflow/c/kernels:portable_all_op_kernels",
+        "//tensorflow/core/kernels/data:portable_all_op_kernels",
         "//tensorflow/core/kernels/image:portable_all_op_kernels",
         "//tensorflow/core/kernels/linalg:portable_all_op_kernels",
     ] + glob(
