@@ -1352,6 +1352,7 @@ class _ClusterCoordinatorDataHandler(DataHandler):
                       "`DatasetCreator`.")
 
     def per_worker_dataset_fn():
+
       return strategy.distribute_datasets_from_function(
           x, options=x.input_options)
 

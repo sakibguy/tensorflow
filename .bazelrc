@@ -142,6 +142,10 @@ build --config=short_logs
 
 build --config=v2
 
+# Disable AWS/HDFS support by default
+build --define=no_aws_support=true
+build --define=no_hdfs_support=true
+
 # Default options should come above this line.
 
 # Allow builds using libc++ as a linker library
@@ -595,7 +599,7 @@ build:asan --linkopt -fsanitize=address
 # CC=clang bazel build --config msan
 build:msan --strip=never
 build:msan --copt -fsanitize=memory
-build:msan --copt -DADDRESS_SANITIZER
+build:msan --copt -DMEMORY_SANITIZER
 build:msan --copt -g
 build:msan --copt -O3
 build:msan --copt -fno-omit-frame-pointer
@@ -605,6 +609,7 @@ build:msan --linkopt -fsanitize=memory
 # CC=clang bazel build --config ubsan
 build:ubsan --strip=never
 build:ubsan --copt -fsanitize=undefined
+build:msan --copt -DUNDEFINED_BEHAVIOR_SANITIZER
 build:ubsan --copt -g
 build:ubsan --copt -O3
 build:ubsan --copt -fno-omit-frame-pointer

@@ -64,7 +64,7 @@ XLA_MAKE_BINARY(Mul, xla::Mul(lhs, rhs, extend_dimensions));
 REGISTER_XLA_OP(Name("Div"), MlirXlaOpKernel);
 
 XLA_MAKE_BINARY(Atan2, xla::Atan2(lhs, rhs, extend_dimensions));
-XLA_MAKE_BINARY(Complex, xla::Complex(lhs, rhs, extend_dimensions));
+REGISTER_XLA_OP(Name("Complex"), MlirXlaOpKernel);
 
 // Implementation of DivNoNan. Pseudo-code:
 // if (y == 0) {
@@ -106,12 +106,11 @@ XLA_MAKE_BINARY(MulNoNan,
 //
 // For floating-point values, simply returns floor(x / y).  For integers, does:
 //
-// if ((x < 0) != (y < 0)) {
-//   T abs_x = std::abs(x);
-//   T abs_y = std::abs(y);
-//   return -(abs_x + abs_y - 1) / abs_y;
+// z = x / y
+// if (z * y != x && (x < 0) != (y < 0)) {
+//   return  z - 1;
 // } else {
-//   return x / y;
+//   return z;
 // }
 static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                xla::XlaOp y, const BCast& broadcast_helper) {
@@ -134,11 +133,10 @@ static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   }
   auto zero = XlaHelpers::Zero(b, dtype);
   auto one = XlaHelpers::One(b, dtype);
-  auto different_sign = xla::Ne(xla::Lt(x, zero), xla::Lt(y, zero));
-  auto abs_x = xla::Abs(x);
-  auto abs_y = xla::Abs(y);
-  auto t = xla::Neg(xla::Sub(xla::Add(abs_x, abs_y), one));
-  return xla::Select(different_sign, xla::Div(t, abs_y), xla::Div(x, y));
+  auto x_div_y = xla::Div(x, y);
+  auto round_down = xla::And(xla::Ne(xla::Mul(x_div_y, y), x),
+                             xla::Ne(xla::Lt(x, zero), xla::Lt(y, zero)));
+  return xla::Select(round_down, xla::Sub(x_div_y, one), x_div_y);
 }
 XLA_MAKE_BINARY(FloorDiv,
                 FloorDivImpl(b, input_type(0), lhs, rhs, broadcast_helper));
@@ -192,7 +190,7 @@ XLA_MAKE_BINARY(RightShift,
                      : xla::ShiftRightArithmetic(lhs, rhs, extend_dimensions)));
 
 XLA_MAKE_BINARY(LogicalAnd, xla::And(lhs, rhs, extend_dimensions));
-XLA_MAKE_BINARY(LogicalOr, xla::Or(lhs, rhs, extend_dimensions));
+REGISTER_XLA_OP(Name("LogicalOr"), MlirXlaOpKernel);
 XLA_MAKE_BINARY(Mod, xla::Rem(lhs, rhs, extend_dimensions));
 XLA_MAKE_BINARY(Maximum, xla::Max(lhs, rhs, extend_dimensions));
 XLA_MAKE_BINARY(Minimum, xla::Min(lhs, rhs, extend_dimensions));
@@ -203,10 +201,7 @@ XLA_MAKE_BINARY(
     xla::Mul((lhs * lhs) * lhs,
              xla::Div(rhs, XlaHelpers::IntegerLiteral(b, input_type(0), -2)),
              extend_dimensions));
-XLA_MAKE_BINARY(
-    SqrtGrad,
-    xla::Div(xla::Mul(rhs, XlaHelpers::FloatLiteral(b, input_type(0), 0.5)),
-             lhs, extend_dimensions));
+REGISTER_XLA_OP(Name("SqrtGrad"), MlirXlaOpKernel);
 
 XLA_MAKE_BINARY(TruncateDiv, xla::Div(lhs, rhs, extend_dimensions));
 XLA_MAKE_BINARY(TruncateMod, xla::Rem(lhs, rhs, extend_dimensions));
@@ -215,9 +210,9 @@ XLA_MAKE_BINARY(TruncateMod, xla::Rem(lhs, rhs, extend_dimensions));
 XLA_MAKE_BINARY(Equal, xla::Eq(lhs, rhs, extend_dimensions));
 XLA_MAKE_BINARY(NotEqual, xla::Ne(lhs, rhs, extend_dimensions));
 XLA_MAKE_BINARY(Greater, xla::Gt(lhs, rhs, extend_dimensions));
-XLA_MAKE_BINARY(GreaterEqual, xla::Ge(lhs, rhs, extend_dimensions));
+REGISTER_XLA_OP(Name("GreaterEqual"), MlirXlaOpKernel);
 XLA_MAKE_BINARY(Less, xla::Lt(lhs, rhs, extend_dimensions));
-XLA_MAKE_BINARY(LessEqual, xla::Le(lhs, rhs, extend_dimensions));
+REGISTER_XLA_OP(Name("LessEqual"), MlirXlaOpKernel);
 
 // Non-linear ops
 XLA_MAKE_BINARY(SigmoidGrad,
@@ -232,24 +227,11 @@ XLA_MAKE_BINARY(SoftsignGrad,
                          xla::Square(xla::Add(XlaHelpers::One(b, input_type(0)),
                                               xla::Abs(rhs)))));
 
-XLA_MAKE_BINARY(TanhGrad,
-                xla::Mul(rhs, xla::Sub(XlaHelpers::One(b, input_type(0)),
-                                       xla::Mul(lhs, lhs))));
+REGISTER_XLA_OP(Name("TanhGrad"), MlirXlaOpKernel);
 
 XLA_MAKE_BINARY(Pow, xla::Pow(lhs, rhs, extend_dimensions));
 
-xla::XlaOp SquaredDifferenceImpl(DataType dtype, xla::XlaOp x, xla::XlaOp y,
-                                 const std::vector<int64>& extend_dimensions) {
-  auto difference = xla::Sub(x, y, extend_dimensions);
-  if (DataTypeIsComplex(dtype)) {
-    return xla::Conj(difference) * difference;
-  } else {
-    return xla::Square(difference);
-  }
-}
-XLA_MAKE_BINARY(SquaredDifference,
-                SquaredDifferenceImpl(input_type(0), lhs, rhs,
-                                      extend_dimensions));
+REGISTER_XLA_OP(Name("SquaredDifference"), MlirXlaOpKernel);
 
 xla::XlaOp IgammaImpl(xla::XlaOp x, xla::XlaOp y,
                       const BCast& broadcast_helper) {

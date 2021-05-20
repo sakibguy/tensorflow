@@ -18,6 +18,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/synchronization/notification.h"
+#include "absl/types/optional.h"
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/encapsulate_subgraphs_pass.h"
 #include "tensorflow/compiler/jit/flags.h"
@@ -188,7 +189,8 @@ static Status CompileToLocalExecutable(
   TF_RETURN_IF_ERROR(rm->LookupOrCreate<XlaCompilationCache>(
       rm->default_container(), "xla_cache", &cache,
       [&](XlaCompilationCache** cache) {
-        return BuildXlaCompilationCache(ctx->device(), platform_info, cache);
+        return BuildXlaCompilationCache(ctx->device(), ctx->function_library(),
+                                        platform_info, cache);
       }));
   // Hold the reference to the JIT during evaluation. (We could probably
   // free it sooner because the ResourceMgr will retain a reference, but
@@ -210,7 +212,7 @@ static Status CompileToLocalExecutable(
   compile_options.alias_resource_update = !has_ref_vars &&
                                           may_alias_resource_update;
 
-  xla::StatusOr<std::vector<XlaCompiler::Argument>> args =
+  StatusOr<std::vector<XlaCompiler::Argument>> args =
       XlaComputationLaunchContext::BuildXlaCompilerArguments(
           constants, inputs, variable_infos,
           static_cast<Device*>(ctx->device()));
@@ -221,7 +223,7 @@ static Status CompileToLocalExecutable(
 
 // Resolve the device assignment for the TF single-host MirroredStrategy by
 // calling into TF runtime which in turn would start a rendezvous.
-static xla::StatusOr<xla::DeviceAssignment> ResolveDeviceAssignment(
+static StatusOr<absl::optional<xla::DeviceAssignment>> ResolveDeviceAssignment(
     OpKernelContext* ctx,
     const absl::optional<
         XlaCompiler::CompilationResult::CollectiveReduceV2OpInfo>&
@@ -230,7 +232,7 @@ static xla::StatusOr<xla::DeviceAssignment> ResolveDeviceAssignment(
   if (!collective_reduce_info) {
     // An empty device assignment is sufficient for the case where no
     // collectives are present.
-    return xla::DeviceAssignment{};
+    return {{absl::nullopt}};
   }
 
   CollectiveParams params;
@@ -279,7 +281,7 @@ static xla::StatusOr<xla::DeviceAssignment> ResolveDeviceAssignment(
     out(device_idx, 0) = gpu_device_info->stream->parent()->device_ordinal();
   }
 
-  return out;
+  return {{out}};
 }
 
 void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
@@ -325,7 +327,7 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
       platform_info_.UseMultipleStreams());
   const xla::HloInputOutputAliasConfig& input_output_alias =
       executable->executable()->module().input_output_alias_config();
-  xla::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs =
+  StatusOr<std::vector<xla::ExecutionInput>> execution_inputs =
       launch_context.PopulateInputs(ctx, compilation_result, resource_var_ptrs,
                                     /*missing_ctx_input_prefix=*/0,
                                     input_output_alias);
@@ -333,12 +335,14 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
 
   // Execute the computation.
   VLOG(2) << "Executing computation.";
-  xla::StatusOr<xla::DeviceAssignment> device_assignment =
+  StatusOr<absl::optional<xla::DeviceAssignment>> device_assignment =
       ResolveDeviceAssignment(ctx, compilation_result->collective_reduce_info);
   OP_REQUIRES_OK(ctx, device_assignment.status());
 
   xla::ExecutableRunOptions run_options;
-  run_options.set_device_assignment(&*device_assignment);
+  if (*device_assignment) {
+    run_options.set_device_assignment(&**device_assignment);
+  }
   run_options.set_stream(stream);
   run_options.set_allocator(allocator);
   run_options.set_intra_op_thread_pool(&ctx->eigen_cpu_device());
@@ -353,7 +357,7 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
   Env* env = Env::Default();
   auto start_time = env->NowMicros();
 
-  xla::StatusOr<xla::ExecutionOutput> execution_output;
+  StatusOr<xla::ExecutionOutput> execution_output;
   if (!stream || platform_info_.platform_id() == se::host::kHostPlatformId) {
     execution_output =
         executable->Run(std::move(*execution_inputs), run_options);
@@ -566,7 +570,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   // already been baked into the compiled kernel.
   const xla::HloInputOutputAliasConfig& input_output_alias =
       closure.executable()->executable()->module().input_output_alias_config();
-  xla::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs;
+  StatusOr<std::vector<xla::ExecutionInput>> execution_inputs;
   std::map<int, const Tensor*> snapshot_ptrs;
   {
     tensorflow::profiler::TraceMe hlo_module_activity(
@@ -596,7 +600,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   Env* env = Env::Default();
   auto start_time = env->NowMicros();
 
-  xla::StatusOr<xla::ExecutionOutput> execution_output;
+  StatusOr<xla::ExecutionOutput> execution_output;
   if (!stream || platform_info_.platform_id() == se::host::kHostPlatformId) {
     execution_output =
         closure.executable()->Run(std::move(*execution_inputs), run_options);
@@ -616,7 +620,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       },
       tensorflow::profiler::TraceMeLevel::kInfo);
 
-  xla::StatusOr<std::vector<VariableInfo>> variable_infos = GatherVariableInfo(
+  StatusOr<std::vector<VariableInfo>> variable_infos = GatherVariableInfo(
       ctx, *closure.compilation_result(), closure.num_constant_args());
   OP_REQUIRES_OK(ctx, variable_infos.status());
   OP_REQUIRES_OK(ctx, LockVariables(absl::MakeSpan(*variable_infos)));
