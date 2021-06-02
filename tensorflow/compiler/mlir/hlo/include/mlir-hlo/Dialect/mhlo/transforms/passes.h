@@ -74,6 +74,8 @@ std::unique_ptr<FunctionPass> createMoveUpDynamicBroadcastsForFusionPass();
 ///     specialization cluster.
 ///   - Lower rank specialization clusters to SCF and ranked operations.
 std::unique_ptr<FunctionPass> createRankSpecializationClusterPass();
+std::unique_ptr<FunctionPass> createRankSpecializationToSCFPass(
+    int64_t max_target_rank);
 std::unique_ptr<FunctionPass> createRankSpecializationToSCFPass();
 
 std::unique_ptr<FunctionPass> createOptimizeMhloPass();
@@ -108,6 +110,9 @@ std::unique_ptr<FunctionPass> createLhloFuseLinalgPass(
 
 // Lowers from LHLO dialect to parallel loops.
 std::unique_ptr<OperationPass<FuncOp>> createLegalizeLhloToParallelLoopsPass();
+
+// Legalizes tensor load ops that are inserted during mhlo to lmhlo conversion.
+std::unique_ptr<OperationPass<FuncOp>> createLegalizeTensorLoadOpPass();
 
 }  // namespace lmhlo
 
