@@ -41,7 +41,6 @@ limitations under the License.
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/op_or_arg_name_mapper.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops_a_m.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/export_tf_dialect_op.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
@@ -398,6 +397,19 @@ bool IsOpAllowedTf2XlaPreferred(Operation* op) {
   return ops->count(abstractOp->typeID);
 }
 
+bool IsOpAllowedForTesting(Operation* op) {
+  // clang-format off
+  static auto* ops =
+      new llvm::SmallDenseSet<mlir::TypeID, 16>{
+    // Op used to verify handling of XlaExpression of kind constant.
+    TypeID::get<TF::ConstOp>(),
+  };
+  // clang-format on
+  auto* abstractOp = op->getAbstractOperation();
+  if (!abstractOp) return false;
+  return ops->count(abstractOp->typeID);
+}
+
 namespace {
 
 template <typename T, size_t N>
@@ -625,9 +637,12 @@ LogicalResult Tf2XlaRewriter::LegalizeOp() {
   // Execute the kernel.
   tensorflow::OpKernelContext op_context(&params_, op_->getNumResults());
   device_->Compute(params_.op_kernel, &op_context);
-  if (!op_context.status().ok()) {
+
+  status = op_context.status();
+  status.Update(hlo_builder_.GetCurrentStatus());
+  if (!status.ok()) {
     return op_->emitRemark()
-           << "compilation to HLO failed: " << op_context.status().ToString();
+           << "compilation to HLO failed: " << status.ToString();
   }
 
   // Replace uses of old results using the corresponding value after the
@@ -638,10 +653,12 @@ LogicalResult Tf2XlaRewriter::LegalizeOp() {
     tensorflow::Tensor* output = op_context.mutable_output(i);
     const tensorflow::XlaExpression* expr =
         tensorflow::XlaExpression::CastExpressionFromTensor(*output);
-    if (expr->kind() != tensorflow::XlaExpression::Kind::kXlaOp)
+    if (expr->kind() != tensorflow::XlaExpression::Kind::kXlaOp &&
+        expr->kind() != tensorflow::XlaExpression::Kind::kConstant) {
       return op_->emitError(
           "expects XlaExpression of kind kXlaOp in compiled output");
-    auto value = hlo_builder_.GetValue(expr->handle());
+    }
+    mlir::Value value = hlo_builder_.GetValue(expr->AsXlaOp(&hlo_builder_));
     mlir::OpResult old_result = op_->getResult(i);
     if (value.getType() != old_result.getType()) {
       value = hlo_builder_.create<mlir::tensor::CastOp>(old_result.getType(),
@@ -690,15 +707,17 @@ class Tf2XlaRewritePattern : public RewritePattern {
  public:
   explicit Tf2XlaRewritePattern(MLIRContext* ctx,
                                 const std::string& device_type,
-                                bool prefer_tf2xla)
+                                bool prefer_tf2xla, bool legalize_test_only_ops)
       : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, ctx),
         device_type_(device_type),
-        prefer_tf2xla_(prefer_tf2xla) {}
+        prefer_tf2xla_(prefer_tf2xla),
+        legalize_test_only_ops_(legalize_test_only_ops) {}
 
   LogicalResult matchAndRewrite(Operation* op,
                                 PatternRewriter& rewriter) const override {
     if (!(IsOpAllowedTf2XlaFallback(op) ||
-          (prefer_tf2xla_ && IsOpAllowedTf2XlaPreferred(op))))
+          (prefer_tf2xla_ && IsOpAllowedTf2XlaPreferred(op)) ||
+          (legalize_test_only_ops_ && IsOpAllowedForTesting(op))))
       return failure();
     return Tf2XlaRewriter::RewriteOp(op, rewriter, device_type_);
   }
@@ -706,6 +725,7 @@ class Tf2XlaRewritePattern : public RewritePattern {
  private:
   std::string device_type_;
   bool prefer_tf2xla_;
+  bool legalize_test_only_ops_;
 };
 
 class LegalizeTF : public PassWrapper<LegalizeTF, FunctionPass> {
@@ -721,8 +741,8 @@ class LegalizeTF : public PassWrapper<LegalizeTF, FunctionPass> {
 
   void runOnFunction() override {
     OwningRewritePatternList patterns(&getContext());
-    patterns.insert<Tf2XlaRewritePattern>(&getContext(), device_type_,
-                                          prefer_tf2xla_);
+    patterns.insert<Tf2XlaRewritePattern>(
+        &getContext(), device_type_, prefer_tf2xla_, legalize_test_only_ops_);
     if (failed(
             applyPatternsAndFoldGreedily(getFunction(), std::move(patterns))))
       signalPassFailure();
@@ -740,6 +760,12 @@ class LegalizeTF : public PassWrapper<LegalizeTF, FunctionPass> {
       llvm::cl::desc("Enable legalization when it is not in the list of "
                      "MLIR-legalized ops."),
   };
+  Option<bool> legalize_test_only_ops_{
+      *this,
+      "legalize-test-only-ops",
+      llvm::cl::desc("Enable tf2xla legalizations for some ops that are "
+                     "enabled only for testing."),
+  };
 };
 
 static PassRegistration<LegalizeTF> pass(
@@ -752,7 +778,8 @@ void PopulateLegalizeTfWithTf2XlaPatterns(llvm::StringRef device_type,
                                           OwningRewritePatternList& patterns,
                                           MLIRContext* ctx,
                                           bool prefer_tf2xla) {
-  patterns.insert<Tf2XlaRewritePattern>(ctx, device_type.str(), prefer_tf2xla);
+  patterns.insert<Tf2XlaRewritePattern>(ctx, device_type.str(), prefer_tf2xla,
+                                        /*legalize_test_only_ops=*/false);
 }
 
 std::unique_ptr<OperationPass<FuncOp>> createLegalizeTfWithTf2XlaPass(

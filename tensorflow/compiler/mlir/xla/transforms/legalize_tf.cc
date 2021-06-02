@@ -6479,8 +6479,13 @@ const llvm::DenseSet<mlir::TypeID> &MlirPreferredOps() {
     TypeID::get<TF::RiscAddOp>(),
     TypeID::get<TF::RiscDotOp>(),
 
-    // TFXLA fallback doesn't handle const output yet and this is a safe op.
+    // Const op has a simple legalization and it is much more efficient to lower
+    // within MLIR.
     TypeID::get<TF::ConstOp>(),
+
+    // TF2XLA fallback pattern doesn't support this op as MLIR hlo builder
+    // doesn't implement the outfeed op builder method.
+    TypeID::get<TF::OutfeedEnqueueTupleOp>(),
   };
   // clang-format on
   return *ops;
