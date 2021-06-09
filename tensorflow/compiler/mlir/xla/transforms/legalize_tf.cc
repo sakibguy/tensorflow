@@ -1872,6 +1872,17 @@ class ConvertIdentityNOp : public OpRewritePattern<TF::IdentityNOp> {
   }
 };
 
+// Bypass _EagerConst
+class ConvertEagerConstOp : public OpRewritePattern<TF::_EagerConstOp> {
+ public:
+  using OpRewritePattern<TF::_EagerConstOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(TF::_EagerConstOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, op.getOperand());
+    return success();
+  }
+};
+
 template <typename OpTy>
 class ConvertFFTOp : public OpRewritePattern<OpTy> {
  public:
@@ -5596,6 +5607,28 @@ class ConvertClipByValueOp : public OpRewritePattern<TF::ClipByValueOp> {
   }
 };
 
+// Converts ConstOp to XLA's constant operation and introduces a tensor cast if
+// needed.
+class ConvertConstOp : public OpRewritePattern<TF::ConstOp> {
+ public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::ConstOp op,
+                                PatternRewriter &rewriter) const override {
+    // Convert only for valid HLO tensors.
+    auto ty = op.getType().dyn_cast<TensorType>();
+    if (!ty || !ty.getElementType().isa<FloatType, IntegerType, ComplexType>())
+      return failure();
+
+    auto loc = op.getLoc();
+    Value result = rewriter.create<mhlo::ConstOp>(loc, op.value());
+    if (result.getType() != op.getType())
+      result = rewriter.create<tensor::CastOp>(loc, op.getType(), result);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 // Converts the Cumsum or Cumprod TensorFlow op to the HLO ReduceWindow op by
 // setting appropriate window dimensions, with the given aggregation op as the
 // reduction function. The input tensor needs to have a static shape, and 'axis'
@@ -6598,6 +6631,7 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertBroadcastToOp,
     ConvertBF16FloorDivOp,
     ConvertClipByValueOp,
+    ConvertConstOp,
     ConvertConv2DOp,
     ConvertConv3DOp,
     ConvertDepthConv2DOp,
@@ -6620,6 +6654,7 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertFusedBatchNormV3Op,
     ConvertInfeedDequeueTupleOp,
     ConvertIdentityNOp,
+    ConvertEagerConstOp,
     ConvertInplaceUpdateOp,
     ConvertLinSpaceOp,
     ConvertMaxOp,
