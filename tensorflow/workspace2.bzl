@@ -127,11 +127,11 @@ def _tf_repositories():
     # and update the sha256 with the result.
     tf_http_archive(
         name = "XNNPACK",
-        sha256 = "5482fb0fcdc1df8b4842f8edf944443ea67ffe712a5cd846f0af484abe4f9a79",
-        strip_prefix = "XNNPACK-8f15372eb67ffab0d54cfe3752acaf8f8415af17",
+        sha256 = "7320355409ae5dd2c8600cafbd07b56c379cd13666a7c971ffd3a01025c0f63e",
+        strip_prefix = "XNNPACK-56b78a03e359ac04a3ba758596cd28b198a8000f",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/XNNPACK/archive/8f15372eb67ffab0d54cfe3752acaf8f8415af17.zip",
-            "https://github.com/google/XNNPACK/archive/8f15372eb67ffab0d54cfe3752acaf8f8415af17.zip",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/google/XNNPACK/archive/56b78a03e359ac04a3ba758596cd28b198a8000f.zip",
+            "https://github.com/google/XNNPACK/archive/56b78a03e359ac04a3ba758596cd28b198a8000f.zip",
         ],
     )
 
@@ -570,6 +570,7 @@ def _tf_repositories():
         system_build_file = "//third_party/systemlibs:protobuf.BUILD",
         system_link_files = {
             "//third_party/systemlibs:protobuf.bzl": "protobuf.bzl",
+            "//third_party/systemlibs:protobuf_deps.bzl": "protobuf_deps.bzl",
         },
         urls = [
             "https://storage.googleapis.com/mirror.tensorflow.org/github.com/protocolbuffers/protobuf/archive/v3.9.2.zip",
@@ -972,11 +973,11 @@ def _tf_repositories():
     # https://github.com/bazelbuild/rules_apple/releases
     tf_http_archive(
         name = "build_bazel_rules_apple",
-        sha256 = "a0b7066d9f4193e8a800db2a66f4fe867a7806b8cdeecc3f0b9c9b3fc415338e",
-        strip_prefix = "rules_apple-709d8b12d68b571f23a1187b1cf7b10bb89fa46f",
+        sha256 = "ee9e6073aeb5a65c100cb9c44b0017c937706a4ae03176e14a7e78620a198079",
+        strip_prefix = "rules_apple-5131f3d46794bf227d296c82f30c2499c9de3c5b",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/bazelbuild/rules_apple/archive/709d8b12d68b571f23a1187b1cf7b10bb89fa46f.tar.gz",
-            "https://github.com/bazelbuild/rules_apple/archive/709d8b12d68b571f23a1187b1cf7b10bb89fa46f.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/bazelbuild/rules_apple/archive/5131f3d46794bf227d296c82f30c2499c9de3c5b.tar.gz",
+            "https://github.com/bazelbuild/rules_apple/archive/5131f3d46794bf227d296c82f30c2499c9de3c5b.tar.gz",
         ],
     )
 
@@ -994,10 +995,11 @@ def _tf_repositories():
     # https://github.com/bazelbuild/apple_support/releases
     tf_http_archive(
         name = "build_bazel_apple_support",
-        sha256 = "741366f79d900c11e11d8efd6cc6c66a31bfb2451178b58e0b5edc6f1db17b35",
+        sha256 = "ad8ae80e93612b8151019367a3d1604d7a51c14480dae1254e10252007e8260c",
+        strip_prefix = "apple_support-501b4afb27745c4813a88ffa28acd901408014e4",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/bazelbuild/apple_support/releases/download/0.10.0/apple_support.0.10.0.tar.gz",
-            "https://github.com/bazelbuild/apple_support/releases/download/0.10.0/apple_support.0.10.0.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/bazelbuild/apple_support/archive/501b4afb27745c4813a88ffa28acd901408014e4.tar.gz",
+            "https://github.com/bazelbuild/apple_support/archive/501b4afb27745c4813a88ffa28acd901408014e4.tar.gz",
         ],
     )
 
