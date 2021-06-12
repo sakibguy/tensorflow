@@ -58,7 +58,8 @@
         enable this feature. The documentation in [Advanced autodiff]
         (https://www.tensorflow.org/guide/advanced_autodiff#custom_gradients)
         has been updated.
-
+    *   Object metadata has now been deprecated and no longer saved to the
+        SavedModel.
 *   TF Core:
     *   Added `tf.config.experimental.reset_memory_stats` to reset the tracked
         peak memory returned by `tf.config.experimental.get_memory_info`.
@@ -94,6 +95,8 @@
     *   Added a new session config setting `internal_fragmentation_fraction`,
         which controls when the BFC Allocator needs to split an oversized chunk
         to satisfy an allocation request.
+    *   Added `tf.get_current_name_scope()` which returns the current full name
+        scope string that will be prepended to op names.
 *   `tf.data`:
     *   Promoting `tf.data.experimental.bucket_by_sequence_length` API to
         `tf.data.Dataset.bucket_by_sequence_length` and deprecating the
@@ -127,6 +130,9 @@
         *   `tf.data.experimental.StatsOptions.*`
         *   `tf.data.experimental.bytes_produced_stats`
         *   `tf.data.experimental.latency_stats`
+    *   Removed experimental tf.data API for map vectorization:
+        *   `tf.data.experimental.OptimizationOptions.map_vectorization`
+        *   `tf.data.experimental.MapVectorizationOptions.*`
 *   `tf.keras`:
     *   Fix usage of `__getitem__` slicing in Keras Functional APIs when the
         inputs are `RaggedTensor` objects.
