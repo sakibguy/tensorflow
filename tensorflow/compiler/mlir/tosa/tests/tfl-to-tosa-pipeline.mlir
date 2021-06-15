@@ -778,6 +778,16 @@ func @test_fakequant_with_min_max_args(%arg0: tensor<13x21x3xf32>) -> tensor<13x
 
 // -----
 
+// CHECK-LABEL: @test_dequantize
+func @test_dequantize(%arg0: tensor<10xf16>) -> tensor<10xf32> {
+  // CHECK: %[[VAR0:.+]] = "tosa.cast"(%arg0) : (tensor<10xf16>) -> tensor<10xf32>
+  // CHECK: return %[[VAR0]]
+  %0 = "tfl.dequantize"(%arg0) : (tensor<10xf16>) -> tensor<10xf32>
+  return %0 : tensor<10xf32>
+}
+
+// -----
+
 // CHECK-LABEL: test_quant_stats
 func @test_quant_stats(%arg0: tensor<2x1xf32>) -> (tensor<2x1xf32>) {
   // CHECK-NOT: quant.stats
@@ -992,3 +1002,15 @@ func @test_gather_nd(%arg0: tensor<13x21x3xf32>) -> tensor<6x7x21x3xf32> {
     %1 = "tfl.gather_nd"(%arg0, %0) : (tensor<13x21x3xf32>, tensor<6x7x1xi32>) -> tensor<6x7x21x3xf32>
   return %1 : tensor<6x7x21x3xf32>
 }
+
+// -----
+
+// CHECK-LABEL: @test_arg_max
+func @test_arg_max(%arg0: tensor<13x21x3xf32>) -> tensor<13x3xf32> {
+  // CHECK: %[[ARGMAX:.+]] = "tosa.argmax"(%arg0) {axis = 1 : i64}
+  // CHECK: return %[[ARGMAX]] : tensor<13x3xf32>
+  %0 = "tfl.pseudo_const"() {value = dense<1> : tensor<i32>} : () -> tensor<i32>
+  %1 = "tfl.arg_max"(%arg0, %0) : (tensor<13x21x3xf32>, tensor<i32>) -> tensor<13x3xf32>
+  return %1 : tensor<13x3xf32>
+}
+
