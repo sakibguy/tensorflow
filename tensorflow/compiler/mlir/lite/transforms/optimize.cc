@@ -23,6 +23,7 @@ limitations under the License.
 #include <iterator>
 #include <map>
 #include <numeric>
+#include <utility>
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -365,23 +366,40 @@ bool IsF32Value(Value value) {
   return value.getType().cast<ShapedType>().getElementType().isF32();
 }
 
-bool IsLastDimensionEqualOne(Attribute shape) {
-  const auto int_shape = shape.dyn_cast_or_null<DenseIntElementsAttr>();
-  if (!int_shape) return false;
+// Returns the number of elements in attr if it is a DenseElementsAttr, 1
+// otherwise, as an unranked int32 Attribute.
+Attribute GetNumElementsOrOne(Attribute attr) {
+  const auto dense_attr = attr.dyn_cast_or_null<DenseElementsAttr>();
+  int32_t num_elements = dense_attr ? dense_attr.getNumElements() : 1;
 
-  if (int_shape.empty()) return false;
-  const auto last_dimension_index = int_shape.getNumElements() - 1;
-  const auto dimension_iterator = int_shape.getIntValues().begin();
-  const APInt last_dimension = dimension_iterator[last_dimension_index];
-  return last_dimension == 1;
+  OpBuilder builder(attr.getContext());
+
+  return DenseIntElementsAttr::get(
+      RankedTensorType::get({}, builder.getI32Type()),
+      {llvm::APInt(32, num_elements, true)});
 }
 
-bool IsOneHotIndexAttribute(Attribute index_attr) {
-  const auto index_dense_attr = index_attr.dyn_cast<DenseElementsAttr>();
-  if (!index_dense_attr) {
+// Returns true if attr is a DenseIntElementsAttr with the last element equal 1.
+bool IsLastElementEqualsOne(Attribute attr) {
+  const auto ints = attr.dyn_cast_or_null<DenseIntElementsAttr>();
+  if (!ints) return false;
+  if (ints.empty()) return false;
+  const auto last_element_index = ints.getNumElements() - 1;
+  const auto iterator = ints.getIntValues().begin();
+  const APInt last_element = iterator[last_element_index];
+  return last_element == 1;
+}
+
+// Returns true if attr is a DenseIntElementsAttr of int32 or int64 values or an
+// incrementing sequence from 0 to N-1.
+//
+// If such a value is used in an Equal operator, it can be replaced with OneHot.
+bool IsOneHotIndexAttribute(Attribute attr) {
+  const auto dense_attr = attr.dyn_cast_or_null<DenseIntElementsAttr>();
+  if (!dense_attr) {
     return false;
   }
-  auto index_type = index_dense_attr.getType();
+  auto index_type = dense_attr.getType();
   const auto index_elem_bits = index_type.getElementTypeBitWidth();
   if (index_elem_bits != 32 && index_elem_bits != 64) {
     return false;
@@ -389,8 +407,8 @@ bool IsOneHotIndexAttribute(Attribute index_attr) {
   if (index_type.getRank() != 1) {
     return false;
   }
-  const auto elems = index_dense_attr.getIntValues().begin();
-  for (int i = 0; i < index_dense_attr.getNumElements(); ++i) {
+  const auto elems = dense_attr.getIntValues().begin();
+  for (int i = 0; i < dense_attr.getNumElements(); ++i) {
     if (i != elems[i]) {
       return false;
     }

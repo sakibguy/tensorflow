@@ -4047,7 +4047,7 @@ port::Status CudnnSupport::DoConvolveWithExecutionPlan(
         GetFirstWorkingExecutionPlan(op_graph, kind, cudnn, scratch_allocator));
   }
 
-  size_t workspace_size;
+  size_t workspace_size = 0;
   cudnnBackendDescriptor_t plan_desc;
   std::string exec_plan_id = "unknown";
   if (current_plan) {
@@ -4282,7 +4282,7 @@ port::Status CudnnSupport::DoFusedConvolveWithExecutionPlanImpl(
                                      cudnn, scratch_allocator));
   }
 
-  size_t workspace_size;
+  size_t workspace_size = 0;
   cudnnBackendDescriptor_t plan_desc;
   std::string exec_plan_id = "unknown";
   if (current_plan) {
@@ -5005,6 +5005,14 @@ port::Status CudnnSupport::DoFusedConvolve(
     return port::UnimplementedError(
         "cudnnConvolutionBiasActivationForward() for int8 is only supported on "
         "GPUs with compute capability 6.1 or later.");
+  }
+
+  if (input_type == dnn::DataType::kInt8 &&
+      output_type == dnn::DataType::kFloat &&
+      (CUDNN_VERSION >= 8000 && CUDNN_VERSION <= 8200)) {
+    return port::UnimplementedError(
+        "int8 -> float fused conv is disabled for this cuDNN version. See "
+        "go/nvbugs/3326122");
   }
 
   if (input_type == dnn::DataType::kDouble) {

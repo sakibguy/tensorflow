@@ -2169,10 +2169,10 @@ func @replaceReshapeEqualWithOneHot(%arg: tensor<2xi32>) -> tensor<2x3xi1> {
   %result = "tfl.equal"(%tmp, %cst) : (tensor<2x1xi32>, tensor<3xi32>) -> tensor<2x3xi1>
   return %result : tensor<2x3xi1>
 
-  // CHECK: %[[CST1:.*]] = constant dense<3> : tensor<1xi32>
+  // CHECK: %[[CST1:.*]] = constant dense<3> : tensor<i32>
   // CHECK: %[[CST2:.*]] = constant dense<true> : tensor<i1>
   // CHECK: %[[CST3:.*]] = constant dense<false> : tensor<i1>
-  // CHECK: %[[RES:.*]] = "tfl.one_hot"(%arg0, %[[CST1]], %[[CST2]], %[[CST3]]) {axis = -1 : i32} : (tensor<2xi32>, tensor<1xi32>, tensor<i1>, tensor<i1>) -> tensor<2x3xi1>
+  // CHECK: %[[RES:.*]] = "tfl.one_hot"(%arg0, %[[CST1]], %[[CST2]], %[[CST3]]) {axis = -1 : i32} : (tensor<2xi32>, tensor<i32>, tensor<i1>, tensor<i1>) -> tensor<2x3xi1>
 }
 
 // CHECK-LABEL: noReplaceReshapeEqualWithOneHotBadShape
