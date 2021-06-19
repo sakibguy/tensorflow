@@ -225,12 +225,12 @@ struct NcclCliqueParticipantData : public ParticipantData {
 
   // For running in TFRT.
   NcclCliqueParticipantData(const RendezvousKey& rendezvous_key,
-                            CUcontext context)
+                            se::gpu::GpuContextHandle context)
       : ParticipantData(rendezvous_key), stream(nullptr), context(context) {}
 
   int64 device_ordinal;
   se::Stream* stream;
-  CUcontext context;
+  se::gpu::GpuContextHandle context;
 
   std::string ToString() const override {
     if (stream != nullptr) {
