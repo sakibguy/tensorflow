@@ -12,7 +12,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/c/experimental/ops/gen/cpp/cpp_controller.h"
+#include "tensorflow/c/experimental/ops/gen/cpp/cpp_generator.h"
+
+#include <algorithm>
 
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/test.h"
@@ -21,18 +23,23 @@ namespace tensorflow {
 namespace generator {
 namespace {
 
-TEST(CppControllerTest, typical_usage) {
+TEST(CppGeneratorTest, typical_usage) {
   string category = "testing";
   string name_space = "tensorflow::ops";
   string output_dir = "tensorflow/c/experimental/ops/gen/cpp/golden";
   string source_dir = "tensorflow";
   string api_dirs = "";
-  std::vector<string> ops = {"Neg", "MatMul", "IdentityN",
-                             "SparseSoftmaxCrossEntropyWithLogits"};
+  std::vector<string> ops = {
+      "Neg",        // Simple unary Op
+      "MatMul",     // 2 inputs & attrs with default values
+      "IdentityN",  // Variadic input+output
+      "SparseSoftmaxCrossEntropyWithLogits",  // 2 outputs
+      "AccumulatorApplyGradient",             // 0 outputs
+  };
 
   cpp::CppConfig cpp_config(category, name_space);
   PathConfig controller_config(output_dir, source_dir, api_dirs, ops);
-  CppController generator(cpp_config, controller_config);
+  CppGenerator generator(cpp_config, controller_config);
 
   string generated_header = generator.HeaderFileContents().Render();
   string generated_source = generator.SourceFileContents().Render();
@@ -49,6 +56,14 @@ TEST(CppControllerTest, typical_usage) {
       io::JoinPath(testing::TensorFlowSrcRoot(),
                    controller_config.tf_output_dir, "testing_ops.cc.golden");
   TF_CHECK_OK(ReadFileToString(env, source_file_name, &expected_source));
+
+  // Remove carriage returns (for Windows)
+  expected_header.erase(
+      std::remove(expected_header.begin(), expected_header.end(), '\r'),
+      expected_header.end());
+  expected_source.erase(
+      std::remove(expected_source.begin(), expected_source.end(), '\r'),
+      expected_source.end());
 
   EXPECT_EQ(expected_header, generated_header);
   EXPECT_EQ(expected_source, generated_source);
