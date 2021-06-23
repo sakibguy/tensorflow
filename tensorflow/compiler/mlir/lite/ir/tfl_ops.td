@@ -4748,7 +4748,7 @@ the dimension is padded with zeros.
   );
 }
 
-def TFL_VarHandleOp : TFL_Op<"var_handle_op", []> {
+def TFL_VarHandleOp : TFL_Op<"var_handle", []> {
   let summary = "Returns a handle to a variable resource from its name.";
 
   let description = [{
@@ -4763,6 +4763,8 @@ def TFL_VarHandleOp : TFL_Op<"var_handle_op", []> {
   );
 
   let results = (outs TFL_ResourceTensor:$resource_handle);
+
+  let hasOptions = 1;
 }
 
 def TFL_AssignVariableOp : TFL_Op<"assign_variable", []> {

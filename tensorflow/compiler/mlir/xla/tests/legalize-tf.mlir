@@ -1611,13 +1611,24 @@ func @stateful_pcall_multi_in_out(%arg0: tensor<i32>, %arg1: tensor<i32>) -> (te
 
 // CHECK-LABEL: func @elu
 func @elu(%arg0: tensor<1xf32>) -> tensor<1xf32> {
-  // CHECK-DAG: %[[ZERO:.*]] = mhlo.constant dense<0.000000e+00> : tensor<f32>
-  // CHECK-DAG: %[[PRED:.*]] = chlo.broadcast_compare %arg0, %[[ZERO]] {broadcast_dimensions = dense<> : tensor<0xi64>, comparison_direction = "GT"}
+  // CHECK-DAG: %[[ZERO:.*]] = "chlo.constant_like"(%arg0) {value = 0.000000e+00 : f32} : (tensor<1xf32>) -> tensor<1xf32>
+  // CHECK-DAG: %[[PRED:.*]] = "mhlo.compare"(%arg0, %[[ZERO]]) {comparison_direction = "GT"}
   // CHECK-DAG: %[[EXP:.*]] = "mhlo.exponential_minus_one"(%arg0)
   // CHECK: %[[RESULT:.*]] = "mhlo.select"(%[[PRED]], %arg0, %[[EXP]])
   // CHECK: return %[[RESULT]]
   %0 = "tf.Elu"(%arg0) : (tensor<1xf32>) -> tensor<1xf32>
   return %0: tensor<1xf32>
+}
+
+// CHECK-LABEL: func @elu_unranked
+func @elu_unranked(%arg0: tensor<?xf32>) -> tensor<?xf32> {
+  // CHECK-DAG: %[[ZERO:.*]] = "chlo.constant_like"(%arg0) {value = 0.000000e+00 : f32} : (tensor<?xf32>) -> tensor<?xf32>
+  // CHECK-DAG: %[[PRED:.*]] = "mhlo.compare"(%arg0, %[[ZERO]]) {comparison_direction = "GT"}
+  // CHECK-DAG: %[[EXP:.*]] = "mhlo.exponential_minus_one"(%arg0)
+  // CHECK: %[[RESULT:.*]] = "mhlo.select"(%[[PRED]], %arg0, %[[EXP]])
+  // CHECK: return %[[RESULT]]
+  %0 = "tf.Elu"(%arg0) : (tensor<?xf32>) -> tensor<?xf32>
+  return %0: tensor<?xf32>
 }
 
 // CHECK-LABEL: func @elu_grad
@@ -2653,8 +2664,7 @@ func @expand_dims_dynamic(%arg0: tensor<?x?xf32>) -> tensor<?x1x?xf32> {
   // CHECK-DAG: [[GETEXTENT0:%.+]] = shape.get_extent [[SHAPEOF]], [[CST0]]
   // CHECK-DAG: [[CST1_0:%.+]] = constant 1
   // CHECK-DAG: [[GETEXTENT1:%.+]] = shape.get_extent [[SHAPEOF]], [[CST1_0]]
-  // CHECK-DAG: [[FROMEXTENTS:%.+]] = shape.from_extents [[GETEXTENT0]], [[CST1]], [[GETEXTENT1]]
-  // CHECK-DAG: [[TOEXTENTS:%.+]] = shape.to_extent_tensor [[FROMEXTENTS]]
+  // CHECK-DAG: [[TOEXTENTS:%.+]] = tensor.from_elements [[GETEXTENT0]], [[CST1]], [[GETEXTENT1]]
   // CHECK-DAG: [[RESHAPE:%.+]] = "mhlo.dynamic_reshape"(%arg0, [[TOEXTENTS]])
   %0 = "tf.ExpandDims"(%arg0, %axis) : (tensor<?x?xf32>, tensor<i32>) -> tensor<?x1x?xf32>
 
@@ -2674,8 +2684,7 @@ func @expand_dynamic_dims_rank1_axis(%arg0: tensor<?x?x4xf32>) -> tensor<?x1x?x4
   // CHECK-DAG: [[GETEXTENT1:%.+]] = shape.get_extent [[SHAPEOF]], [[CST1_0]]
   // CHECK-DAG: [[CST2:%.+]] = constant 2
   // CHECK-DAG: [[GETEXTENT2:%.+]] = shape.get_extent [[SHAPEOF]], [[CST2]]
-  // CHECK-DAG: [[FROMEXTENTS:%.+]] = shape.from_extents [[GETEXTENT0]], [[CST1]], [[GETEXTENT1]], [[GETEXTENT2]]
-  // CHECK-DAG: [[TOEXTENTS:%.+]] = shape.to_extent_tensor [[FROMEXTENTS]]
+  // CHECK-DAG: [[TOEXTENTS:%.+]] = tensor.from_elements [[GETEXTENT0]], [[CST1]], [[GETEXTENT1]], [[GETEXTENT2]]
   // CHECK-DAG: [[RESHAPE:%.+]] = "mhlo.dynamic_reshape"(%arg0, [[TOEXTENTS]])
   %0 = "tf.ExpandDims"(%arg0, %axis) : (tensor<?x?x4xf32>, tensor<1xi32>) -> tensor<?x1x?x4xf32>
 
