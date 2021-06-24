@@ -348,6 +348,7 @@ TransposePlan::Node* TransposePlan::BuildPlanNode(
   nodes_.push_back(std::make_unique<Node>());
   Node* node = nodes_.back().get();
   const int ndim = a_dims_.size();
+  DCHECK_GT(ndim, 0);
   if (i == loop_order_.size()) {
     // Sentinel node that says that we should invoke the kernel.
     node->next = nullptr;
@@ -395,8 +396,26 @@ StatusOr<std::unique_ptr<TransposePlan>> TransposePlan::Create(
 
   auto plan = std::make_unique<TransposePlan>();
   plan->elem_size_in_bytes_ = elem_size_in_bytes;
+  switch (elem_size_in_bytes) {
+    case 1:
+    case 2:
+    case 4:
+    case 8:
+    case 16:
+      break;
+    default:
+      return InvalidArgument("Unsupported elem_size_in_bytes=%d",
+                             elem_size_in_bytes);
+  }
   plan->num_elems_ = std::accumulate(dims.begin(), dims.end(), int64_t{1},
                                      std::multiplies<int64_t>());
+  plan->a_dims_.resize(ndim);
+  absl::c_copy(dims, plan->a_dims_.begin());
+  plan->original_a_dims_ = plan->a_dims_;
+
+  plan->permutation_.resize(ndim);
+  absl::c_copy(permutation, plan->permutation_.begin());
+
   plan->original_b_dims_ = Permute(dims, permutation);
   ComputeStrides(plan->elem_size_in_bytes_, plan->original_b_dims_,
                  plan->original_b_strides_);
@@ -414,60 +433,48 @@ StatusOr<std::unique_ptr<TransposePlan>> TransposePlan::Create(
           "input_strides_in_bytes must be non-negative, got %s",
           absl::StrJoin(dims, ","));
     }
-    plan->original_a_strides_.resize(ndim);
-    absl::c_copy(*input_strides_in_bytes, plan->original_a_strides_.begin());
-    // Sort the dimensions from slowest-varying (largest strides) to
-    // fastest-varying (smallest strides).
-    std::vector<int64_t> dim_order(ndim);
-    absl::c_iota(dim_order, 0);
-    absl::c_stable_sort(dim_order, [&](int a, int b) {
-      int64_t stride_a = input_strides_in_bytes->at(a);
-      int64_t stride_b = input_strides_in_bytes->at(b);
-      // If there is a dimension with size equal to the element size, sort it
-      // last. This ensures that we place any stride-1 dimension last.
-      if (stride_a != elem_size_in_bytes && stride_b == elem_size_in_bytes) {
-        return true;
-      }
-      return stride_a > stride_b;
-    });
-    // dim_order maps new input dim -> old input dim, we need its inverse to
-    // compute the new permutation.
-    auto inv_dim_order = InversePermutation(dim_order);
-    plan->lda_.reserve(ndim);
-    plan->a_dims_.reserve(ndim);
-    plan->permutation_.reserve(ndim);
-    for (int i = 0; i < ndim; ++i) {
-      plan->lda_.push_back(input_strides_in_bytes->at(dim_order[i]));
-      plan->a_dims_.push_back(dims[dim_order[i]]);
-      plan->permutation_.push_back(inv_dim_order[permutation[i]]);
-    }
-    plan->original_a_dims_.resize(ndim);
-    absl::c_copy(dims, plan->original_a_dims_.begin());
+    plan->lda_.resize(ndim);
+    absl::c_copy(*input_strides_in_bytes, plan->lda_.begin());
   } else {
-    plan->original_a_dims_.resize(ndim);
-    absl::c_copy(dims, plan->original_a_dims_.begin());
-    plan->a_dims_.resize(ndim);
-    absl::c_copy(dims, plan->a_dims_.begin());
-    plan->permutation_.resize(ndim);
-    absl::c_copy(permutation, plan->permutation_.begin());
     ComputeStrides(plan->elem_size_in_bytes_, plan->a_dims_, plan->lda_);
-    plan->original_a_strides_ = plan->lda_;
   }
-  permutation = {};
+  plan->original_a_strides_ = plan->lda_;
 
   RemoveTrivialDimensions(plan->a_dims_, plan->permutation_, plan->lda_);
   CoalesceDimensions(plan->a_dims_, plan->permutation_, plan->lda_);
 
+  ndim = plan->a_dims_.size();
+
+  plan->loop_order_.resize(ndim);
+  // TODO(phawkins): pick a good loop order.
+
+  absl::c_iota(plan->loop_order_, 0);
+
+  // Sort the dimensions from slowest-varying (largest strides) to
+  // fastest-varying (smallest strides).
+  absl::c_stable_sort(plan->loop_order_, [&](int a, int b) {
+    int64_t stride_a = plan->lda_[a];
+    int64_t stride_b = plan->lda_[b];
+    // If there is a dimension with size equal to the element size, sort it
+    // last. This ensures that we place a stride-1 dimension last if there is
+    // one.
+    if (stride_a != elem_size_in_bytes && stride_b == elem_size_in_bytes) {
+      return true;
+    }
+    return stride_a > stride_b;
+  });
+
   // If the plan is 0-dimensional, or the innermost dimension is not of stride
   // 1, adds a trivial size 1 dimension. The transpose kernels rely on the
-  // presence of a 1-element-stride innermost dimension in the input.
-  if (plan->lda_.empty() || plan->lda_.back() != plan->elem_size_in_bytes_) {
+  // presence of a stride-1 innermost dimension in the input.
+  if (plan->lda_.empty() ||
+      plan->lda_[plan->loop_order_.back()] != plan->elem_size_in_bytes_) {
     plan->permutation_.push_back(plan->a_dims_.size());
+    plan->loop_order_.push_back(plan->a_dims_.size());
     plan->a_dims_.push_back(1);
     plan->lda_.push_back(elem_size_in_bytes);
+    ++ndim;
   }
-
-  ndim = static_cast<int>(plan->a_dims_.size());
 
   plan->b_dims_ = Permute(plan->a_dims_, plan->permutation_);
   ComputeStrides(plan->elem_size_in_bytes_, plan->b_dims_, plan->ldb_);
@@ -476,16 +483,10 @@ StatusOr<std::unique_ptr<TransposePlan>> TransposePlan::Create(
   // inverse_permutation maps dimensions of a to b
   auto inverse_permutation = InversePermutation(plan->permutation_);
 
-  plan->loop_order_.reserve(ndim);
-  // TODO(phawkins): pick a good loop order.
-  for (int i = 0; i < ndim; ++i) {
-    plan->loop_order_.push_back(i);
-  }
-
   plan->inner_kernel_is_memcpy_ = plan->permutation_[ndim - 1] == ndim - 1;
   if (plan->inner_kernel_is_memcpy_) {
     // The stride-1 loop must be innermost.
-    CHECK_EQ(plan->loop_order_.back(), ndim - 1);
+    CHECK_EQ(plan->lda_[plan->loop_order_.back()], plan->elem_size_in_bytes_);
   } else {
     switch (plan->elem_size_in_bytes_) {
       case 1:
@@ -596,7 +597,7 @@ void TransposePlan::Execute(const void* a, void* b) const {
       ExecuteTyped<uint128>(static_cast<const char*>(a), static_cast<char*>(b));
       break;
     default:
-      LOG(FATAL) << "Unimplemented";
+      LOG(FATAL) << "Unimplemented element size " << elem_size_in_bytes_;
   }
 }
 
@@ -623,6 +624,66 @@ std::string TransposePlan::ToString() const {
       absl::StrJoin(permutation_, ","), absl::StrJoin(lda_, ","),
       absl::StrJoin(ldb_, ","), absl::StrJoin(loop_order_, ","),
       outer_block_elems_a_, outer_block_elems_b_, inner_block_elems_, nodes);
+}
+
+struct TransposePlanCacheKey {
+  size_t elem_size_in_bytes;
+  absl::InlinedVector<int64_t, 4> dims;
+  absl::InlinedVector<int64_t, 4> permutation;
+  absl::optional<absl::InlinedVector<int64_t, 4>> input_strides_in_bytes;
+
+  bool operator==(const TransposePlanCacheKey& other) const;
+};
+
+bool TransposePlanCacheKey::operator==(
+    const TransposePlanCacheKey& other) const {
+  return elem_size_in_bytes == other.elem_size_in_bytes && dims == other.dims &&
+         permutation == other.permutation &&
+         input_strides_in_bytes == other.input_strides_in_bytes;
+}
+
+template <typename H>
+H AbslHashValue(H h, const TransposePlanCacheKey& key) {
+  h = H::combine(std::move(h), key.elem_size_in_bytes);
+  h = H::combine_contiguous(std::move(h), key.dims.data(), key.dims.size());
+  h = H::combine_contiguous(std::move(h), key.permutation.data(),
+                            key.permutation.size());
+  if (key.input_strides_in_bytes) {
+    h = H::combine_contiguous(std::move(h), key.input_strides_in_bytes->data(),
+                              key.input_strides_in_bytes->size());
+  }
+  return h;
+}
+
+TransposePlanCache::TransposePlanCache(int capacity)
+    : lru_list_(capacity), cache_(&lru_list_) {}
+
+TransposePlanCache::~TransposePlanCache() = default;
+
+StatusOr<std::shared_ptr<TransposePlan>> TransposePlanCache::GetOrCreate(
+    size_t elem_size_in_bytes, absl::Span<int64_t const> dims,
+    absl::Span<int64_t const> permutation,
+    absl::optional<absl::Span<int64_t const>> input_strides_in_bytes) {
+  TransposePlanCacheKey key;
+  key.elem_size_in_bytes = elem_size_in_bytes;
+  key.dims.resize(dims.size());
+  absl::c_copy(dims, key.dims.begin());
+  key.permutation.resize(permutation.size());
+  absl::c_copy(permutation, key.permutation.begin());
+  if (input_strides_in_bytes) {
+    key.input_strides_in_bytes = absl::InlinedVector<int64_t, 4>(
+        input_strides_in_bytes->begin(), input_strides_in_bytes->end());
+  }
+  return cache_.GetOrCreateIfAbsent(
+      key,
+      [&](const TransposePlanCacheKey& key)
+          -> StatusOr<std::shared_ptr<TransposePlan>> {
+        TF_ASSIGN_OR_RETURN(
+            std::unique_ptr<TransposePlan> plan,
+            TransposePlan::Create(elem_size_in_bytes, dims, permutation,
+                                  input_strides_in_bytes));
+        return std::shared_ptr<TransposePlan>(std::move(plan));
+      });
 }
 
 }  // namespace xla
