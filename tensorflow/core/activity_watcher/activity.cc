@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The TensorFlow Authors All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -12,18 +12,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_LITE_PYTHON_MODEL_ANALYZER_WRAPPER_ANALYZER_H_
-#define TENSORFLOW_LITE_PYTHON_MODEL_ANALYZER_WRAPPER_ANALYZER_H_
 
-#include <string>
+#include "tensorflow/core/activity_watcher/activity.h"
 
-namespace tflite {
-
-// Returns a brief dump of the given TFLite file or model.
-// It examines the model file itself without instantiating TFLite interpreters.
-std::string model_analyzer(const std::string& model_file_or_buffer,
-                           bool input_is_filepath);
-
-}  // namespace tflite
-
-#endif  // TENSORFLOW_LITE_PYTHON_MODEL_ANALYZER_WRAPPER_ANALYZER_H_
+namespace tensorflow {
+namespace activity_watcher {
+ActivityScope::ActivityScope(std::unique_ptr<Activity>) {}
+ActivityScope::~ActivityScope() {}
+}  // namespace activity_watcher
+}  // namespace tensorflow
