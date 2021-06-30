@@ -352,6 +352,21 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "tensorflow_reduce_patterns_inc_gen",
+    tbl_outs = [
+        (
+            ["-gen-rewriters"],
+            "transforms/reducer/tf_reduce_patterns.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "transforms/reducer/tf_mlir_reduce_patterns.td",
+    td_srcs = [
+        "//tensorflow/compiler/mlir/tensorflow:tensorflow_ops_td_files",
+    ],
+)
+
+gentbl_cc_library(
     name = "hlo_legalize_tf_inc_gen",
     compatible_with = get_compatible_with_cloud(),
     tbl_outs = [
@@ -1071,7 +1086,6 @@ cc_library(
         "transforms/collection_ops_util.cc",
         "transforms/constant_op_device_assignment.cc",
         "transforms/convert_launch_func_to_tf_call.cc",
-        "transforms/cross_host_transfer.cc",
         "transforms/decompose_resource_ops_pass.cc",
         "transforms/device_attribute_to_launch.cc",
         "transforms/device_index_selector.cc",
