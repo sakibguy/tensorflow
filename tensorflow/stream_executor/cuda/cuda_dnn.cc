@@ -3775,8 +3775,14 @@ GetFirstWorkingExecutionPlan(
                       .build();
   RETURN_MSG_IF_CUDNN_ERROR(fallback);
 
-  auto engine_count = heuristics.getEngineConfigCount();
+  // cuDNN frontend sneakily puts error messages on the object and returns
+  // partially-initialized results when there's an error; make sure to check
+  // them.
+  int64_t engine_count = heuristics.getEngineConfigCount();
+  RETURN_MSG_IF_CUDNN_ERROR(heuristics);
   auto& engine_config = heuristics.getEngineConfig(engine_count);
+  RETURN_MSG_IF_CUDNN_ERROR(heuristics);
+
   auto& fallback_list = fallback.getFallbackList();
 
   cudnn_frontend::EngineConfigList filtered_configs;
@@ -4394,7 +4400,14 @@ bool CudnnSupport::GetConvolveExecutionPlans(
                       .build();
   RETURN_FALSE_IF_CUDNN_ERROR(fallback);
 
-  auto& heur_configs = heur.getEngineConfig(heur.getEngineConfigCount());
+  // cuDNN frontend sneakily puts error messages on the object and returns
+  // partially-initialized results when there's an error; make sure to check
+  // them.
+  int64_t engine_count = heur.getEngineConfigCount();
+  RETURN_FALSE_IF_CUDNN_ERROR(heur);
+  auto& heur_configs = heur.getEngineConfig(engine_count);
+  RETURN_FALSE_IF_CUDNN_ERROR(heur);
+
   auto& fallback_configs = fallback.getFallbackList();
 
   VLOG(4) << "\nHeuristics engine configs size: " << heur_configs.size()
@@ -4471,7 +4484,14 @@ port::Status CudnnSupport::GetFusedConvolveExecutionPlans(
           .build();
   RETURN_MSG_IF_CUDNN_ERROR(fallback);
 
-  auto& heur_configs = heur.getEngineConfig(heur.getEngineConfigCount());
+  // cuDNN frontend sneakily puts error messages on the object and returns
+  // partially-initialized results when there's an error; make sure to check
+  // them.
+  int64_t engine_count = heur.getEngineConfigCount();
+  RETURN_MSG_IF_CUDNN_ERROR(heur);
+  auto& heur_configs = heur.getEngineConfig(engine_count);
+  RETURN_MSG_IF_CUDNN_ERROR(heur);
+
   auto& fallback_configs = fallback.getFallbackList();
 
   VLOG(4) << "\nHeuristics engine configs size: " << heur_configs.size()
@@ -5172,61 +5192,6 @@ bool CudnnSupport::DoTransformTensor(Stream* stream,
     return port::Status::OK();
   }();
   return IsStatusOk(status, /*report_error=*/true);
-}
-
-template <class T>
-port::Status CudnnSupport::DoConvolveBackwardBiasImpl(
-    Stream* stream, const dnn::BatchDescriptor& input_descriptor,
-    const DeviceMemory<T>& input_data,
-    const dnn::BatchDescriptor& bias_descriptor,
-    DeviceMemory<T>* backward_bias_data) {
-  cudnnDataType_t cudnn_type = GetCudnnDataType<T>();
-  CudnnTensorDescriptor input_nd(input_descriptor, cudnn_type);
-  CudnnTensorDescriptor bias_nd(bias_descriptor, cudnn_type);
-
-  // Alpha is the scaling factor for input.
-  float alpha = 1.0;
-  // Beta is the scaling factor for output.
-  float beta = 0.0;
-
-  auto cudnn = cudnn_->GetHandle(parent_, stream);
-  RETURN_IF_CUDNN_ERROR(cudnnConvolutionBackwardBias(
-      cudnn.handle(), &alpha, input_nd.handle(), input_data.opaque(), &beta,
-      bias_nd.handle(), backward_bias_data->opaque()));
-  return port::Status::OK();
-}
-
-bool CudnnSupport::DoConvolveBackwardBias(
-    Stream* stream, const dnn::BatchDescriptor& input_descriptor,
-    const DeviceMemory<double>& input_data,
-    const dnn::BatchDescriptor& bias_descriptor,
-    DeviceMemory<double>* backward_bias_data) {
-  return IsStatusOk(
-      DoConvolveBackwardBiasImpl(stream, input_descriptor, input_data,
-                                 bias_descriptor, backward_bias_data),
-      /*report_error=*/true);
-}
-
-bool CudnnSupport::DoConvolveBackwardBias(
-    Stream* stream, const dnn::BatchDescriptor& input_descriptor,
-    const DeviceMemory<float>& input_data,
-    const dnn::BatchDescriptor& bias_descriptor,
-    DeviceMemory<float>* backward_bias_data) {
-  return IsStatusOk(
-      DoConvolveBackwardBiasImpl(stream, input_descriptor, input_data,
-                                 bias_descriptor, backward_bias_data),
-      /*report_error=*/true);
-}
-
-bool CudnnSupport::DoConvolveBackwardBias(
-    Stream* stream, const dnn::BatchDescriptor& input_descriptor,
-    const DeviceMemory<Eigen::half>& input_data,
-    const dnn::BatchDescriptor& bias_descriptor,
-    DeviceMemory<Eigen::half>* backward_bias_data) {
-  return IsStatusOk(
-      DoConvolveBackwardBiasImpl(stream, input_descriptor, input_data,
-                                 bias_descriptor, backward_bias_data),
-      /*report_error=*/true);
 }
 
 bool CudnnSupport::DoMatMul(Stream* stream,
