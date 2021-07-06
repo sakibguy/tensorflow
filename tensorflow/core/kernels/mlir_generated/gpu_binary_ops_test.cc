@@ -563,12 +563,70 @@ GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Float, float, float, baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Double, double, double, baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Complex64, std::complex<float>,
+                       std::complex<float>, baseline_mul,
+                       test::OpsTestConfig().RTol(1e-6).ATol(1e-6))
+GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Complex128, std::complex<double>,
+                       std::complex<double>, baseline_mul,
+                       test::OpsTestConfig().RTol(1e-6).ATol(1e-6))
 GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Int8, int8, int8, baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Int16, int16, int16, baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Int64, int64, int64, baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
+
+// The following tests don't work with Eigen kernels if the Eigen kernels are
+// compiled with nvcc.
+#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+TEST_F(BinaryOpsTest, MulComplex64SpecialCases) {
+  TestEqualShapes<std::complex<float>, std::complex<float>, std::complex<float>,
+                  std::complex<float>>(
+      "Mul", /*shape=*/{67, 63},
+      test::NearZeroInfAndNanInput<std::complex<float>>(),
+      test::RepeatElements(test::NearZeroInfAndNanInput<std::complex<float>>(),
+                           64),
+      baseline_mul, test::OpsTestConfig());
+}
+
+TEST_F(BinaryOpsTest, MulComplex128SpecialCases) {
+  TestEqualShapes<std::complex<double>, std::complex<double>,
+                  std::complex<double>, std::complex<double>>(
+      "Mul", /*shape=*/{67, 63},
+      test::NearZeroInfAndNanInput<std::complex<double>>(),
+      test::RepeatElements(test::NearZeroInfAndNanInput<std::complex<double>>(),
+                           64),
+      baseline_mul, test::OpsTestConfig());
+}
+#endif
+
+/// Test `tf.MulNoNan`.
+
+template <typename T>
+T baseline_mul_no_nan(T lhs, T rhs) {
+  return rhs == T(0) ? T(0) : lhs * rhs;
+}
+
+GENERATE_DEFAULT_TESTS(MulNoNan,
+                       /*test_name=*/Half, Eigen::half, Eigen::half,
+                       baseline_mul_no_nan,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(MulNoNan,
+                       /*test_name=*/Float, float, float, baseline_mul_no_nan,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(MulNoNan,
+                       /*test_name=*/Double, double, double,
+                       baseline_mul_no_nan,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TESTS(MulNoNan,
+                       /*test_name=*/Complex64, std::complex<float>,
+                       std::complex<float>, baseline_mul_no_nan,
+                       test::OpsTestConfig().ATol(1e-6).RTol(1e-6))
+GENERATE_DEFAULT_TESTS(MulNoNan,
+                       /*test_name=*/Complex128, std::complex<double>,
+                       std::complex<double>, baseline_mul_no_nan,
+                       test::OpsTestConfig())
 
 /// Test `tf.NotEqual`.
 
@@ -844,7 +902,7 @@ GENERATE_DEFAULT_TESTS(Sub, /*test_name=*/Int64, int64, int64, baseline_sub,
 
 template <typename T>
 T baseline_xlogy(T x, T y) {
-  return x == 0 ? x : x * std::log(y);
+  return x == T(0) ? x : x * std::log(y);
 }
 
 GENERATE_DEFAULT_TESTS_2(Xlogy, /*test_name=*/Half, Eigen::half, float,
@@ -856,6 +914,12 @@ GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Float, float, float, baseline_xlogy,
 GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Double, double, double,
                        baseline_xlogy,
                        test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex64, std::complex<float>,
+                       std::complex<float>, baseline_xlogy,
+                       test::OpsTestConfig())
+GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex128, std::complex<double>,
+                       std::complex<double>, baseline_xlogy,
+                       test::OpsTestConfig())
 
 /// Test `tf.Xlog1py`.
 

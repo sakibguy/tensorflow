@@ -260,6 +260,7 @@ tf_kernel_library(
         "gpu_op_zeta.cc",
     ]) + if_mlir_generated_experimental_kernels_enabled([
         "gpu_op_floor_div.cc",
+        "gpu_op_mul_no_nan.cc",
         "gpu_op_xdivy.cc",
         "gpu_op_xlogy.cc",
         "gpu_op_xlog1py.cc",
@@ -297,6 +298,7 @@ tf_kernel_library(
         "//third_party/eigen3",
     ]) + if_mlir_generated_experimental_kernels_enabled([
         ":gpu_floor_div_kernels",
+        ":gpu_mul_no_nan_kernels",
         ":gpu_xdivy_kernels",
         ":gpu_xlogy_kernels",
         ":gpu_xlog1py_kernels",
@@ -924,9 +926,17 @@ gpu_kernel_library(
         "f16",
         "f32",
         "f64",
+        "c64",
+        "c128",
         "i8",
         "i16",
         "i64",
+    ],
+    # For complex MulOp kernels, we don't use unrolling, it would only cause
+    # slowdowns.
+    types_with_unrolling_disabled = [
+        "c64",
+        "c128",
     ],
     unroll_factors = "4",
 )
@@ -1434,6 +1444,14 @@ gpu_kernel_library(
         "f16",
         "f32",
         "f64",
+        "c64",
+        "c128",
+    ],
+    # For complex XlogyOp kernels, we don't use unrolling, it would only cause
+    # slowdowns.
+    types_with_unrolling_disabled = [
+        "c64",
+        "c128",
     ],
     unroll_factors = "4",
 )
@@ -1525,6 +1543,23 @@ gpu_kernel_library(
         "f64",
         "i32",
         "i64",
+    ],
+    unroll_factors = "4",
+)
+
+gpu_kernel_library(
+    name = "zeros_like_kernels",
+    op = "zeros_like",
+    tile_size = "1024",
+    types = [
+        "i1",
+        "i64",
+        "f16",
+        "f32",
+        "f64",
+        # TODO(b/190374484): Enable it for complex types once it is supported.
+        # "c64",
+        # "c128",
     ],
     unroll_factors = "4",
 )
