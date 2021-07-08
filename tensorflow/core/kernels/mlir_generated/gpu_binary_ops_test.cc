@@ -241,6 +241,16 @@ GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     /*test_name=*/Int64, int64, int64, test::DefaultInput<int64>(),
     test::DefaultInputNonZero<int64>(), baseline_div,
     test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    Div,
+    /*test_name=*/UInt8, uint8, uint8, test::DefaultInput<uint8>(),
+    test::DefaultInputNonZero<uint8>(), baseline_div,
+    test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    Div,
+    /*test_name=*/UInt16, uint16, uint16, test::DefaultInput<uint16>(),
+    test::DefaultInputNonZero<uint16>(), baseline_div,
+    test::OpsTestConfig().ExpectStrictlyEqual())
 
 // The following tests don't work with Eigen kernels if the Eigen kernels are
 // compiled with nvcc.
@@ -389,6 +399,18 @@ GENERATE_DEFAULT_TESTS(Greater, /*test_name=*/Int16, int16, bool,
 GENERATE_DEFAULT_TESTS(Greater, /*test_name=*/Int64, int64, bool,
                        baseline_greater,
                        test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Greater, /*test_name=*/UInt8, uint8, bool,
+                       baseline_greater,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Greater, /*test_name=*/UInt16, uint16, bool,
+                       baseline_greater,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Greater, /*test_name=*/UInt32, uint32, bool,
+                       baseline_greater,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Greater, /*test_name=*/UInt64, uint64, bool,
+                       baseline_greater,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
 
 /// Test `tf.GreaterEqual`.
 
@@ -413,6 +435,18 @@ GENERATE_DEFAULT_TESTS(GreaterEqual, /*test_name=*/Int16, int16, bool,
                        baseline_greater_equal,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS(GreaterEqual, /*test_name=*/Int64, int64, bool,
+                       baseline_greater_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(GreaterEqual, /*test_name=*/UInt8, uint8, bool,
+                       baseline_greater_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(GreaterEqual, /*test_name=*/UInt16, uint16, bool,
+                       baseline_greater_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(GreaterEqual, /*test_name=*/UInt32, uint32, bool,
+                       baseline_greater_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(GreaterEqual, /*test_name=*/UInt64, uint64, bool,
                        baseline_greater_equal,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 
@@ -460,6 +494,14 @@ GENERATE_DEFAULT_TESTS(Less, /*test_name=*/Int16, int16, bool, baseline_less,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS(Less, /*test_name=*/Int64, int64, bool, baseline_less,
                        test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Less, /*test_name=*/UInt8, uint8, bool, baseline_less,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Less, /*test_name=*/UInt16, uint16, bool, baseline_less,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Less, /*test_name=*/UInt32, uint32, bool, baseline_less,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(Less, /*test_name=*/UInt64, uint64, bool, baseline_less,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
 
 /// Test `tf.LessEqual`.
 
@@ -484,6 +526,18 @@ GENERATE_DEFAULT_TESTS(LessEqual, /*test_name=*/Int16, int16, bool,
                        baseline_less_equal,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS(LessEqual, /*test_name=*/Int64, int64, bool,
+                       baseline_less_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(LessEqual, /*test_name=*/UInt8, uint8, bool,
+                       baseline_less_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(LessEqual, /*test_name=*/UInt16, uint16, bool,
+                       baseline_less_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(LessEqual, /*test_name=*/UInt32, uint32, bool,
+                       baseline_less_equal,
+                       test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS(LessEqual, /*test_name=*/UInt64, uint64, bool,
                        baseline_less_equal,
                        test::OpsTestConfig().ExpectStrictlyEqual())
 
@@ -925,7 +979,12 @@ GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex128, std::complex<double>,
 
 template <typename T>
 T baseline_xlog1py(T x, T y) {
-  return x == 0 ? x : x * std::log1p(y);
+  return x == T(0) ? x : x * std::log1p(y);
+}
+
+template <typename T>
+std::complex<T> baseline_xlog1py(std::complex<T> x, std::complex<T> y) {
+  return x == std::complex<T>(0) ? x : x * std::log(std::complex<T>(1) + y);
 }
 
 GENERATE_DEFAULT_TESTS_2(Xlog1py, /*test_name=*/Half, Eigen::half, float,
@@ -936,6 +995,12 @@ GENERATE_DEFAULT_TESTS(Xlog1py, /*test_name=*/Float, float, float,
                        baseline_xlog1py, test::OpsTestConfig().RTol(1e-2))
 GENERATE_DEFAULT_TESTS(Xlog1py, /*test_name=*/Double, double, double,
                        baseline_xlog1py, test::OpsTestConfig().RTol(1e-2))
+GENERATE_DEFAULT_TESTS(Xlog1py, /*test_name=*/Complex64, std::complex<float>,
+                       std::complex<float>, baseline_xlog1py,
+                       test::OpsTestConfig().ATol(1e-5).RTol(1e-2))
+GENERATE_DEFAULT_TESTS(Xlog1py, /*test_name=*/Complex128, std::complex<double>,
+                       std::complex<double>, baseline_xlog1py,
+                       test::OpsTestConfig().RTol(1e-2))
 
 /// Test `tf.TruncateDiv`.
 
@@ -948,6 +1013,16 @@ GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     TruncateDiv,
     /*test_name=*/Int64, int64, int64, test::DefaultInput<int64>(),
     test::DefaultInputNonZero<int64>(), baseline_div,
+    test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    TruncateDiv,
+    /*test_name=*/UInt8, uint8, uint8, test::DefaultInput<uint8>(),
+    test::DefaultInputNonZero<uint8>(), baseline_div,
+    test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    TruncateDiv,
+    /*test_name=*/UInt16, uint16, uint16, test::DefaultInput<uint16>(),
+    test::DefaultInputNonZero<uint16>(), baseline_div,
     test::OpsTestConfig().ExpectStrictlyEqual())
 
 /// Test `tf.Xdivy`.

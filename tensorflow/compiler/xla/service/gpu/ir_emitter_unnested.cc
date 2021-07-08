@@ -65,7 +65,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/backend_configs.pb.h"
 #include "tensorflow/compiler/xla/service/gpu/bef_thunk.h"
 #include "tensorflow/compiler/xla/service/gpu/buffer_allocations.h"
-#include "tensorflow/compiler/xla/service/gpu/collective_permute_thunk.h"
 #include "tensorflow/compiler/xla/service/gpu/conditional_thunk.h"
 #include "tensorflow/compiler/xla/service/gpu/convolution_thunk.h"
 #include "tensorflow/compiler/xla/service/gpu/copy_thunk.h"
@@ -3034,17 +3033,6 @@ Status IrEmitterUnnested::EmitCollectivePermute(mlir::Operation* op) {
         /*source_address=*/source_slice,
         /*destination_buffer=*/result_slice,
         /*mem_size=*/ShapeUtil::ByteSizeOf(shape)));
-  } else if (!collective_permute_op.channel_id() && partition_count == 1) {
-    // The non-NCCL based collective permute only works for a single partition
-    // cross replica case.
-    using source_dest_pairs_t = std::vector<std::pair<int64, int64>>;
-    TF_ASSIGN_OR_RETURN(
-        source_dest_pairs_t source_dest_pairs,
-        ConvertNx2Attribute(collective_permute_op.source_target_pairs()));
-
-    AddThunkToThunkSequence(absl::make_unique<CollectivePermuteThunk>(
-        GetThunkInfo(op), std::move(source_dest_pairs), source_slice,
-        result_slice));
   } else {
     const NcclCollectivePermuteThunk::Buffer buffer = {
         /*element_count=*/ShapeUtil::ElementsIn(shape),
@@ -4892,6 +4880,10 @@ bool IsUnrollingColumnReductionBeneficial(
     return false;
   }
 
+  if (input_shape.dimensions()[input_shape.rank() - 1] < 64) {
+    return false;
+  }
+
   if (IsReductionFromOrToContiguousDimensions(unnested_hlo, layout_analysis)) {
     return true;
   }
@@ -5022,6 +5014,8 @@ ReductionCodegenInfo IrEmitterUnnested::ComputeReductionCodegenInfo(
       return kStridedIndexingX;
     }
   }();
+  VLOG(3) << "Each threads will produce " << num_partial_results
+          << " output(s)";
 
   int vector_size = 1;
   if (indexing_order == kStridedLinearIndexingX) {
