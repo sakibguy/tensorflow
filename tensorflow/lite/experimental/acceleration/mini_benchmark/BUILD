@@ -512,6 +512,7 @@ cc_library(
     srcs = ["set_big_core_affinity.cc"],
     hdrs = ["set_big_core_affinity.h"],
     deps = [":big_little_affinity"],
+    alwayslink = True,
 )
 
 #
@@ -637,6 +638,7 @@ cc_test(
     tags = [
         "no_mac",
         "no_windows",
+        "nomsan",  # TODO(b/193070577): Remove this after fixing the tsan failure.
         "notsan",  # TODO(b/193070577): Remove this after fixing the tsan failure.
         "tflite_not_portable_ios",
     ],
