@@ -13,23 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_ALL_REDUCE_CREATOR_H_
-#define TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_ALL_REDUCE_CREATOR_H_
+#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "tensorflow/core/kernels/mlir_generated/base_gpu_op.h"
 
-#include "tensorflow/compiler/xla/service/hlo_pass_interface.h"
+namespace tensorflow {
 
-namespace xla {
+GENERATE_AND_REGISTER_UNARY_GPU_KERNEL(Softsign, DT_HALF);
+GENERATE_AND_REGISTER_UNARY_GPU_KERNEL(Softsign, DT_FLOAT);
+GENERATE_AND_REGISTER_UNARY_GPU_KERNEL(Softsign, DT_DOUBLE);
 
-// Transforms each all-reduce instruction to a pair of all-reduce-start and
-// all-reduce-done.
-class AsyncAllReduceCreator : public HloModulePass {
- public:
-  AsyncAllReduceCreator() = default;
-  absl::string_view name() const override { return "async-all-reduce-creator"; }
-
-  StatusOr<bool> Run(HloModule* module) override;
-};
-
-}  // namespace xla
-
-#endif  // TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_ALL_REDUCE_CREATOR_H_
+}  // namespace tensorflow

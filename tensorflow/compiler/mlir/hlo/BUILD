@@ -771,6 +771,7 @@ cc_library(
         "@llvm-project//mlir:GPUDialect",
         "@llvm-project//mlir:GPUToGPURuntimeTransforms",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:LLVMTransforms",
         "@llvm-project//mlir:MathDialect",
@@ -832,6 +833,20 @@ cc_library(
         "@llvm-project//mlir:StandardOps",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
+    ],
+)
+
+cc_library(
+    name = "mhlo_mark_shape_calc",
+    srcs = ["lib/Dialect/mhlo/transforms/mhlo_mark_shape_calc.cc"],
+    deps = [
+        ":hlo",
+        ":pass_details",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:StandardOps",
+        "@llvm-project//mlir:Transforms",
     ],
 )
 
@@ -1626,6 +1641,7 @@ cc_library(
         ":mhlo_canonicalize_reduction",
         ":mhlo_control_flow_to_scf",
         ":mhlo_fusion",
+        ":mhlo_mark_shape_calc",
         ":mhlo_to_mhlo_lowering_patterns",
         ":ral_inject_execution_context",
         ":ral_legalize_to_llvm",

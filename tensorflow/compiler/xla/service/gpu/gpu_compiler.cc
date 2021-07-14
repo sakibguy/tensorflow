@@ -46,7 +46,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/all_reduce_combiner.h"
 #include "tensorflow/compiler/xla/service/all_reduce_reassociate.h"
 #include "tensorflow/compiler/xla/service/all_to_all_decomposer.h"
-#include "tensorflow/compiler/xla/service/async_all_reduce_creator.h"
+#include "tensorflow/compiler/xla/service/async_collective_creator.h"
 #include "tensorflow/compiler/xla/service/batchnorm_expander.h"
 #include "tensorflow/compiler/xla/service/bfloat16_normalization.h"
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
@@ -395,7 +395,7 @@ Status GpuCompiler::OptimizeHloModule(
     AlgebraicSimplifierOptions options;
     options.set_replace_transpose_with_bitcast(false);
     options.set_enable_conv_operand_swap(false);
-    collectives_pipeline.AddPass<AlgebraicSimplifier>(options);
+    collectives_pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(options);
 
     collectives_pipeline.AddPass<AllGatherBroadcastReorder>();
     TF_RETURN_IF_ERROR(collectives_pipeline.Run(hlo_module).status());
@@ -478,7 +478,8 @@ Status GpuCompiler::OptimizeHloModule(
     if (hlo_module->config()
             .debug_options()
             .xla_gpu_enable_async_all_reduce()) {
-      pipeline.AddPass<AsyncAllReduceCreator>();
+      pipeline.AddPass<AsyncCollectiveCreator>(/*convert_all_reduce=*/true,
+                                               /*convert_all_gather=*/false);
     }
 
     pipeline.AddPass<CollectivesScheduleLinearizer>();
