@@ -294,10 +294,10 @@ class Interpreter {
   }
 
   /// WARNING: Experimental interface, subject to change
-  /// Returns list of all names of different method signatures defined
-  /// in the model.
+  /// Returns list of all keys of different method signatures defined in the
+  /// model.
   /// Note, pointers returned have lifetime same as the Interpreter object.
-  std::vector<const std::string*> signature_def_names() const {
+  std::vector<const std::string*> signature_keys() const {
     std::vector<const std::string*> signature_keys;
     signature_keys.reserve(signature_defs_.size());
     for (const auto& sig_def : signature_defs_) {
@@ -351,8 +351,8 @@ class Interpreter {
   /// Returns the input tensor identified by 'signature_input_name' in the
   /// signature identified by 'signature_key'.
   /// Returns nullptr if not found.
-  TfLiteTensor* input_tensor_by_signature_name(const char* signature_input_name,
-                                               const char* signature_key) {
+  TfLiteTensor* input_tensor_by_signature(const char* signature_input_name,
+                                          const char* signature_key) {
     const int tensor_index = GetTensorIndexFromSignatureDefName(
         signature_input_name, signature_key, /*is_input=*/true);
     return tensor_index == -1 ? nullptr : tensor(tensor_index);
@@ -362,7 +362,7 @@ class Interpreter {
   /// Returns the output tensor identified by 'signature_output_name' in the
   /// signature identified by 'signature_key'.
   /// Returns nullptr if not found.
-  const TfLiteTensor* output_tensor_by_signature_name(
+  const TfLiteTensor* output_tensor_by_signature(
       const char* signature_output_name, const char* signature_key) const {
     const int tensor_index = GetTensorIndexFromSignatureDefName(
         signature_output_name, signature_key, /*is_input=*/false);

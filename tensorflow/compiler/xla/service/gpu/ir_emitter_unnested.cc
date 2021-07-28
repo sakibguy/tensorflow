@@ -1088,7 +1088,8 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
       inputs.push_back(bias.value());
     }
 
-    if (IsBefThunkEnabled()) {
+    if (IsBefThunkEnabled() && op.lhs_stride() && op.rhs_stride()) {
+      // TODO(loreno): TFRT support for zero-strided gemm calls
       return CreateBefThunk(GetThunkInfo(op), op, inputs,
                             std::vector<BufferAllocation::Slice>{output});
     }
@@ -1108,6 +1109,8 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
     if (gemm_bias_beta.has_value()) {
       backend.set_beta(gemm_bias_beta.value());
     }
+    backend.set_lhs_stride(op.lhs_stride());
+    backend.set_rhs_stride(op.rhs_stride());
 
     auto& dims = *backend.mutable_dot_dimension_numbers();
     auto mlir_dims = op.dot_dimension_numbers();
@@ -5313,10 +5316,6 @@ Status IrEmitterUnnested::EmitInputFusibleNonStridedSlices(
 
   constexpr int unroll_factor = 1;
 
-  std::vector<llvm_ir::IrArray> ir_arrays;
-  TF_ASSIGN_OR_RETURN(auto kernel_thunk,
-                      BuildKernelThunk(fusion, GetThunkInfo(op), &ir_arrays));
-
   TF_ASSIGN_OR_RETURN(const HloComputation* fused_computation,
                       GetOrCreateSubComputationFromRegion(&fusion.region(),
                                                           /*is_fusion=*/true));
@@ -5327,6 +5326,10 @@ Status IrEmitterUnnested::EmitInputFusibleNonStridedSlices(
                       CalculateLaunchDimensions(
                           element_shape, ir_emitter_context_->gpu_device_info(),
                           {unroll_factor}));
+
+  std::vector<llvm_ir::IrArray> ir_arrays;
+  TF_ASSIGN_OR_RETURN(auto kernel_thunk,
+                      BuildKernelThunk(fusion, GetThunkInfo(op), &ir_arrays));
   SetThunkLaunchDimensions(launch_dimensions, kernel_thunk.get(),
                            ir_emitter_context_->llvm_module());
 
