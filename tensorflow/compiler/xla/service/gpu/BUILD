@@ -2,7 +2,6 @@
 #   GPU-specific components in XLA service implementation.
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_proto_library",
@@ -75,6 +74,7 @@ cc_library(
     name = "gpu_executable_run_options",
     srcs = ["gpu_executable_run_options.cc"],
     hdrs = ["gpu_executable_run_options.h"],
+    compatible_with = get_compatible_with_cloud(),
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/compiler/xla:statusor",
@@ -113,6 +113,7 @@ cc_library(
     hdrs = [
         "launch_dimensions.h",
     ],
+    compatible_with = get_compatible_with_cloud(),
     deps = [
         ":gpu_device_info",
         "//tensorflow/compiler/xla:shape_util",
@@ -205,6 +206,7 @@ cc_library(
     name = "target_util",
     srcs = ["target_util.cc"],
     hdrs = ["target_util.h"],
+    compatible_with = get_compatible_with_cloud(),
     deps = [
         "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
@@ -219,6 +221,7 @@ cc_library(
 cc_library(
     name = "gpu_device_info",
     hdrs = ["gpu_device_info.h"],
+    compatible_with = get_compatible_with_cloud(),
 )
 
 cc_library(
@@ -311,6 +314,7 @@ cc_library(
     name = "parallel_loop_emitter",
     srcs = ["parallel_loop_emitter.cc"],
     hdrs = ["parallel_loop_emitter.h"],
+    compatible_with = get_compatible_with_cloud(),
     deps = [
         ":launch_dimensions",
         ":target_util",
@@ -380,28 +384,12 @@ cc_library(
 )
 
 cc_library(
-    name = "hlo_execution_profiler",
-    srcs = ["hlo_execution_profiler.cc"],
-    hdrs = ["hlo_execution_profiler.h"],
-    deps = [
-        "//tensorflow/compiler/xla/service:hlo",
-        "//tensorflow/compiler/xla/service:hlo_execution_profile",
-        "//tensorflow/compiler/xla/service:stream_pool",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:ptr_util",
-        "//tensorflow/core/platform:stream_executor_no_cuda",
-        "@com_google_absl//absl/memory",
-    ],
-)
-
-cc_library(
     name = "thunk",
     srcs = ["thunk.cc"],
     hdrs = ["thunk.h"],
     deps = [
         ":buffer_allocations",
         ":gpu_executable_run_options",
-        ":hlo_execution_profiler",
         "//tensorflow/compiler/xla:executable_run_options",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/core:lib",
@@ -440,6 +428,7 @@ tf_cuda_library(
         "nccl_collective_permute_thunk.h",
         "nccl_collective_thunk.h",
     ],
+    compatible_with = [],
     copts = if_cuda_is_configured(["-DGOOGLE_CUDA=1"]) + if_nccl(["-DGOOGLE_XCCL=1"]),
     deps = [
         ":buffer_allocations",
@@ -623,7 +612,6 @@ cc_library(
         ":gpu_conv_runner",
         ":gpu_executable_run_options",
         ":gpu_types",
-        ":hlo_execution_profiler",
         ":io_feed_manager",
         ":ir_emission_utils",
         ":nccl_collective_thunks",
@@ -633,6 +621,7 @@ cc_library(
         ":thunk",
         "@llvm-project//mlir:IR",
         "//tensorflow/compiler/mlir/hlo:lhlo_gpu",
+        "//tensorflow/compiler/xla/service:hlo_execution_profile",
         "//tensorflow/compiler/xla:array2d",
         "//tensorflow/compiler/xla:literal",
         "//tensorflow/compiler/xla:refcounting_hash_map",
@@ -649,7 +638,6 @@ cc_library(
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_casting_utils",
         "//tensorflow/compiler/xla/service:hlo_dataflow_analysis",
-        "//tensorflow/compiler/xla/service:hlo_execution_profile",
         "//tensorflow/compiler/xla/service:logical_buffer",
         "//tensorflow/compiler/xla/service:shaped_buffer",
         "//tensorflow/compiler/xla/service:transfer_manager",
@@ -720,6 +708,7 @@ cc_library(
     name = "ir_emission_utils",
     srcs = ["ir_emission_utils.cc"],
     hdrs = ["ir_emission_utils.h"],
+    compatible_with = get_compatible_with_cloud(),
     deps = [
         ":gpu_device_info",
         ":target_util",
@@ -786,7 +775,6 @@ cc_library(
     deps = [
         ":backend_configs_cc",
         ":buffer_allocations",
-        ":hlo_execution_profiler",
         ":ir_emission_utils",
         ":stream_executor_util",
         ":thunk",
@@ -2287,7 +2275,6 @@ cc_library(
 
 gentbl_cc_library(
     name = "xla_thunks_ops_inc_gen",
-    compatible_with = get_compatible_with_cloud(),
     tbl_outs = [
         (
             ["-gen-op-decls"],

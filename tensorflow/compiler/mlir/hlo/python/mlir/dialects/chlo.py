@@ -1,4 +1,3 @@
-#!/bin/bash
 # Copyright 2021 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,21 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-set -e
 
-dir=tensorflow/c/experimental/ops
-category=$1
+"""MLIR Dialect for CHLO operations."""
 
-echo
-echo ">>>>>>>>>>>>>>>>>>>>>>>>>>> ${category}_ops.h >>>>>>>>>>>>>>>>>>>>>>>>>>>"
-cat ${dir}/${category}_ops.h
-echo "<<<<<<<<<<<<<<<<<<<<<<<<<<< ${category}_ops.h <<<<<<<<<<<<<<<<<<<<<<<<<<<"
-echo
+# pylint: disable=wildcard-import,relative-beyond-top-level,g-import-not-at-top
+from ._chlo_ops_gen import *
 
-echo
-echo ">>>>>>>>>>>>>>>>>>>>>>>>>>> ${category}_ops.cc >>>>>>>>>>>>>>>>>>>>>>>>>>"
-cat ${dir}/${category}_ops.cc
-echo "<<<<<<<<<<<<<<<<<<<<<<<<<<< ${category}_ops.cc <<<<<<<<<<<<<<<<<<<<<<<<<<"
-echo
 
-echo "PASS"
+def register_chlo_dialect(context, load=True):
+  from .._cext_loader import load_extension
+  ext = load_extension("_mlirHlo")
+  ext.register_chlo_dialect(context, load=load)
