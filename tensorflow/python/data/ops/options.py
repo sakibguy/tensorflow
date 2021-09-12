@@ -127,6 +127,63 @@ class ExternalStatePolicy(enum.Enum):
                      (cls.__name__, pb))
 
 
+@tf_export("data.experimental.AutotuneOptions")
+class AutotuneOptions(options_lib.OptionsBase):
+  """Represents options for autotuning dataset performance.
+
+  ```python
+  options = tf.data.Options()
+  options.autotune.enabled = False
+  dataset = dataset.with_options(options)
+  ```
+  """
+
+  enabled = options_lib.create_option(
+      name="enabled",
+      ty=bool,
+      docstring="Whether to automatically tune performance knobs. If None, "
+      "defaults to True.")
+
+  cpu_budget = options_lib.create_option(
+      name="cpu_budget",
+      ty=int,
+      docstring="When autotuning is enabled (through `autotune`), determines "
+      "the CPU budget to use. Values greater than the number of schedulable "
+      "CPU cores are allowed but may result in CPU contention. If None, "
+      "defaults to the number of schedulable CPU cores.")
+
+  ram_budget = options_lib.create_option(
+      name="ram_budget",
+      ty=int,
+      docstring="When autotuning is enabled (through `autotune`), determines "
+      "the RAM budget to use. Values greater than the available RAM in bytes "
+      "may result in OOM. If None, defaults to half of the available RAM in "
+      "bytes.")
+
+  def _to_proto(self):
+    pb = dataset_options_pb2.AutotuneOptions()
+    if self.enabled is not None:
+      pb.enabled = self.enabled
+    if self.cpu_budget is not None:
+      pb.cpu_budget = self.cpu_budget
+    if self.ram_budget is not None:
+      pb.ram_budget = self.ram_budget
+    return pb
+
+  def _from_proto(self, pb):
+    if pb.WhichOneof("optional_enabled") is not None:
+      self.enabled = pb.enabled
+    if pb.WhichOneof("optional_cpu_budget") is not None:
+      self.cpu_budget = pb.cpu_budget
+    if pb.WhichOneof("optional_ram_budget") is not None:
+      self.ram_budget = pb.ram_budget
+
+  def _set_mutable(self, mutable):
+    """Change the mutability value to `mutable` on this options and children."""
+    # pylint: disable=protected-access
+    object.__setattr__(self, "_mutable", mutable)
+
+
 @tf_export("data.experimental.DistributeOptions")
 class DistributeOptions(options_lib.OptionsBase):
   """Represents options for distributed data processing.
@@ -169,12 +226,6 @@ class DistributeOptions(options_lib.OptionsBase):
       self.num_devices = pb.num_devices
 
 
-class _AutotuneAlgorithm(enum.Enum):
-  """Controls what algorithm is used in the autotune implementation."""
-  HILL_CLIMB = 0
-  GRADIENT_DESCENT = 1
-
-
 @tf_export("data.experimental.OptimizationOptions")
 class OptimizationOptions(options_lib.OptionsBase):
   """Represents options for dataset optimizations.
@@ -196,38 +247,6 @@ class OptimizationOptions(options_lib.OptionsBase):
       docstring=
       "Whether to apply default graph optimizations. If False, only graph "
       "optimizations that have been explicitly enabled will be applied.")
-
-  autotune = options_lib.create_option(
-      name="autotune",
-      ty=bool,
-      docstring=
-      "Whether to automatically tune performance knobs. If None, defaults to "
-      "True.")
-
-  autotune_buffers = options_lib.create_option(
-      name="autotune_buffers",
-      ty=bool,
-      docstring=
-      "When autotuning is enabled (through `autotune`), determines whether to "
-      "also autotune buffer sizes for datasets with parallelism. If None,"
-      " defaults to False.")
-
-  autotune_cpu_budget = options_lib.create_option(
-      name="autotune_cpu_budget",
-      ty=int,
-      docstring=
-      "When autotuning is enabled (through `autotune`), determines the CPU "
-      "budget to use. Values greater than the number of schedulable CPU cores "
-      "are allowed but may result in CPU contention. If None, defaults to the "
-      "number of schedulable CPU cores.")
-
-  autotune_ram_budget = options_lib.create_option(
-      name="autotune_ram_budget",
-      ty=int,
-      docstring=
-      "When autotuning is enabled (through `autotune`), determines the RAM "
-      "budget to use. Values greater than the available RAM in bytes may "
-      "result in OOM. If None, defaults to half of the available RAM in bytes.")
 
   filter_fusion = options_lib.create_option(
       name="filter_fusion",
@@ -289,14 +308,6 @@ class OptimizationOptions(options_lib.OptionsBase):
     pb = dataset_options_pb2.OptimizationOptions()
     if self.apply_default_optimizations is not None:
       pb.apply_default_optimizations = self.apply_default_optimizations
-    if self.autotune is not None:
-      pb.autotune = self.autotune
-    if self.autotune_buffers is not None:
-      pb.autotune_buffers = self.autotune_buffers
-    if self.autotune_cpu_budget is not None:
-      pb.autotune_cpu_budget = self.autotune_cpu_budget
-    if self.autotune_ram_budget is not None:
-      pb.autotune_ram_budget = self.autotune_ram_budget
     if self.filter_fusion is not None:
       pb.filter_fusion = self.filter_fusion
     if self.map_and_batch_fusion is not None:
@@ -318,14 +329,6 @@ class OptimizationOptions(options_lib.OptionsBase):
   def _from_proto(self, pb):
     if pb.WhichOneof("optional_apply_default_optimizations") is not None:
       self.apply_default_optimizations = pb.apply_default_optimizations
-    if pb.WhichOneof("optional_autotune") is not None:
-      self.autotune = pb.autotune
-    if pb.WhichOneof("optional_autotune_buffers") is not None:
-      self.autotune_buffers = pb.autotune_buffers
-    if pb.WhichOneof("optional_autotune_cpu_budget") is not None:
-      self.autotune_cpu_budget = pb.autotune_cpu_budget
-    if pb.WhichOneof("optional_autotune_ram_budget") is not None:
-      self.autotune_ram_budget = pb.autotune_ram_budget
     if pb.WhichOneof("optional_filter_fusion") is not None:
       self.filter_fusion = pb.filter_fusion
     if pb.WhichOneof("optional_map_and_batch_fusion") is not None:
@@ -412,9 +415,9 @@ class Options(options_lib.OptionsBase):
 
   >>> dataset = tf.data.Dataset.range(42)
   >>> options = tf.data.Options()
-  >>> options.experimental_deterministic = False
+  >>> options.deterministic = False
   >>> dataset = dataset.with_options(options)
-  >>> print(dataset.options().experimental_deterministic)
+  >>> print(dataset.options().deterministic)
   False
 
   Note: A known limitation of the `tf.data.Options` implementation is that the
@@ -423,12 +426,24 @@ class Options(options_lib.OptionsBase):
   need to be set within the same tf.function.
   """
 
-  experimental_deterministic = options_lib.create_option(
-      name="experimental_deterministic",
+  autotune = options_lib.create_option(
+      name="autotune",
+      ty=AutotuneOptions,
+      docstring="The autotuning options associated with the dataset. See "
+      "`tf.data.experimental.AutotuneOptions` for more details.",
+      default_factory=AutotuneOptions)
+
+  deterministic = options_lib.create_option(
+      name="deterministic",
       ty=bool,
       docstring=
       "Whether the outputs need to be produced in deterministic order. If None,"
       " defaults to True.")
+
+  experimental_deterministic = options_lib.create_option(
+      name="experimental_deterministic",
+      ty=bool,
+      docstring="DEPRECATED. Use `deterministic` instead.")
 
   experimental_distribute = options_lib.create_option(
       name="experimental_distribute",
@@ -437,6 +452,16 @@ class Options(options_lib.OptionsBase):
       "The distribution strategy options associated with the dataset. See "
       "`tf.data.experimental.DistributeOptions` for more details.",
       default_factory=DistributeOptions)
+
+  experimental_external_state_policy = options_lib.create_option(
+      name="experimental_external_state_policy",
+      ty=ExternalStatePolicy,
+      docstring="This option can be used to override the default policy for "
+      "how to handle external state when serializing a dataset or "
+      "checkpointing its iterator. There are three settings available - "
+      "IGNORE: External state is ignored without a warning; WARN: External "
+      "state is ignored and a warning is logged; FAIL: External state results "
+      "in an error.")
 
   experimental_optimization = options_lib.create_option(
       name="experimental_optimization",
@@ -455,15 +480,10 @@ class Options(options_lib.OptionsBase):
       "frequency is determined by the number of devices attached to this "
       "input pipeline. If None, defaults to False.")
 
-  experimental_external_state_policy = options_lib.create_option(
-      name="experimental_external_state_policy",
-      ty=ExternalStatePolicy,
-      docstring="This option can be used to override the default policy for "
-      "how to handle external state when serializing a dataset or "
-      "checkpointing its iterator. There are three settings available - "
-      "IGNORE: External state is ignored without a warning; WARN: External "
-      "state is ignored and a warning is logged; FAIL: External state results "
-      "in an error.")
+  experimental_threading = options_lib.create_option(
+      name="experimental_threading",
+      ty=ThreadingOptions,
+      docstring="DEPRECATED. Use `threading` instead.")
 
   threading = options_lib.create_option(
       name="threading",
@@ -472,26 +492,37 @@ class Options(options_lib.OptionsBase):
       "`tf.data.ThreadingOptions` for more details.",
       default_factory=ThreadingOptions)
 
-  def __getattr__(self, name):
+  def __getattribute__(self, name):
     if name == "experimental_threading":
       logging.warning("options.experimental_threading is deprecated. "
                       "Use options.threading instead.")
       return getattr(self, "threading")
-    else:
-      raise AttributeError("Attribute %s not found." % name)
+    if name == "experimental_deterministic":
+      # TODO(aaudibert): Uncomment after internal uses have been updated.
+      # logging.warning("options.experimental_deterministic is deprecated. "
+      #                 "Use options.deterministic instead.")
+      return getattr(self, "deterministic")
+    return super(Options, self).__getattribute__(name)
 
   def __setattr__(self, name, value):
     if name == "experimental_threading":
       logging.warning("options.experimental_threading is deprecated. "
                       "Use options.threading instead.")
       super(Options, self).__setattr__("threading", value)
-    else:
-      super(Options, self).__setattr__(name, value)
+      return
+    if name == "experimental_deterministic":
+      # TODO(aaudibert): Uncomment after internal uses have been updated.
+      # logging.warning("options.experimental_deterministic is deprecated. "
+      #                 "Use options.deterministic instead.")
+      super(Options, self).__setattr__("deterministic", value)
+      return
+    super(Options, self).__setattr__(name, value)
 
   def _to_proto(self):
     pb = dataset_options_pb2.Options()
-    if self.experimental_deterministic is not None:
-      pb.deterministic = self.experimental_deterministic
+    if self.deterministic is not None:
+      pb.deterministic = self.deterministic
+    pb.autotune_options.CopyFrom(self.autotune._to_proto())  # pylint: disable=protected-access
     pb.distribute_options.CopyFrom(self.experimental_distribute._to_proto())  # pylint: disable=protected-access
     if self.experimental_external_state_policy is not None:
       pb.external_state_policy = (
@@ -505,7 +536,8 @@ class Options(options_lib.OptionsBase):
 
   def _from_proto(self, pb):
     if pb.WhichOneof("optional_deterministic") is not None:
-      self.experimental_deterministic = pb.deterministic
+      self.deterministic = pb.deterministic
+    self.autotune._from_proto(pb.autotune_options)  # pylint: disable=protected-access
     self.experimental_distribute._from_proto(pb.distribute_options)  # pylint: disable=protected-access
     if pb.WhichOneof("optional_external_state_policy") is not None:
       self.experimental_external_state_policy = (
@@ -520,6 +552,7 @@ class Options(options_lib.OptionsBase):
     """Change the mutability value to `mutable` on this options and children."""
     # pylint: disable=protected-access
     object.__setattr__(self, "_mutable", mutable)
+    self.autotune._set_mutable(mutable)
     self.experimental_distribute._set_mutable(mutable)
     self.experimental_optimization._set_mutable(mutable)
     self.threading._set_mutable(mutable)

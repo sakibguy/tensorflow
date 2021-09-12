@@ -31,7 +31,6 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "tfrt/basic_kernels/opdefs/types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
@@ -44,6 +43,7 @@
 #include "tfrt/gpu/pass/pass.h"  // from @tf_runtime
 #include "tfrt/gpu/wrapper/cublas_wrapper.h"  // from @tf_runtime
 #include "tfrt/basic_kernels/opdefs/basic_kernels.h"  // from @tf_runtime
+#include "tfrt/basic_kernels/opdefs/types.h"  // from @tf_runtime
 
 namespace tensorflow {
 namespace {
@@ -124,6 +124,17 @@ mlir::Value MakeScalingFactorConstant(mlir::OpBuilder& builder,
   llvm_unreachable("unsupported type");
 }
 
+// The BEF GEMM thunk and the GEMM auto-tuning must match, so this
+// logic should be in sync with ComputationTypeFromPrimitive()
+static mlir::Type ComputationTypeFromElementType(mlir::Type type) {
+  if (type.isF16()) {
+    mlir::Builder builder(type.getContext());
+    return builder.getF32Type();
+  } else {
+    return type;
+  }
+}
+
 // Create all the Ops necessary for the GEMM operation, including the GEMM
 // operation itself.
 // TODO(b/175130778): element_type parameter when we move from GpuBuffers to
@@ -136,6 +147,8 @@ FailureOr<Value> CreateTfrtOps(
     cublasGemmAlgo_t algorithm, mlir::OpBuilder& builder) {
   auto k_val = lhs_matrix.transpose ? lhs_matrix.num_rows : lhs_matrix.num_cols;
 
+  const auto mlir_compute_type = ComputationTypeFromElementType(element_type);
+
   // TODO(b/176913138): remove second argument to `rewriter.create` calls
   auto m = builder.create<tfrt::compiler::ConstantI32Op>(
       loc, builder.getI32Type(), output_matrix.num_rows);
@@ -145,21 +158,18 @@ FailureOr<Value> CreateTfrtOps(
       loc, builder.getI32Type(), k_val);
 
   auto const_alpha =
-      MakeScalingFactorConstant(builder, loc, element_type, alpha);
+      MakeScalingFactorConstant(builder, loc, mlir_compute_type, alpha);
 
   auto lda = builder.create<tfrt::compiler::ConstantI32Op>(
       loc, builder.getI32Type(), lhs_matrix.num_rows);
   auto ldb = builder.create<tfrt::compiler::ConstantI32Op>(
       loc, builder.getI32Type(), rhs_matrix.num_rows);
 
-  auto const_beta = MakeScalingFactorConstant(builder, loc, element_type, beta);
-
-  cudaDataType_t data_type = MlirTypeToCudaDataType(element_type);
+  auto const_beta =
+      MakeScalingFactorConstant(builder, loc, mlir_compute_type, beta);
 
   auto ldc = builder.create<tfrt::compiler::ConstantI32Op>(
       loc, builder.getI32Type(), output_matrix.num_rows);
-
-  auto compute_type = data_type;  // use the data_type for compute as well.
 
   auto algo = builder.create<tfrt::gpu::BlasGemmAlgoOp>(loc, algorithm);
 
@@ -169,6 +179,9 @@ FailureOr<Value> CreateTfrtOps(
 
   auto lhs_op = lhs_matrix.transpose ? CUBLAS_OP_T : CUBLAS_OP_N;
   auto rhs_op = rhs_matrix.transpose ? CUBLAS_OP_T : CUBLAS_OP_N;
+
+  const auto data_type = MlirTypeToCudaDataType(element_type);
+  const auto compute_type = MlirTypeToCudaDataType(mlir_compute_type);
 
   if (batch_size != 1) {
     int64_t lhs_stride_val = lhs_matrix.num_rows * lhs_matrix.num_cols;
@@ -273,8 +286,8 @@ FailureOr<Value> GemmOpConversionRewrite(
         xla::LayoutUtil::Minor(output_shape.layout(), row_dim);
     return MatrixDescriptor{
         replaced_value, static_cast<bool>(transpose ^ layout_mismatch),
-        shape.dimensions(row_dim + static_cast<int64>(is_row_major)),
-        shape.dimensions(row_dim + static_cast<int64>(!is_row_major))};
+        shape.dimensions(row_dim + static_cast<int64_t>(is_row_major)),
+        shape.dimensions(row_dim + static_cast<int64_t>(!is_row_major))};
   };
 
   MatrixDescriptor lhs_matrix = make_descriptor(
@@ -341,19 +354,6 @@ struct GemmRewritePattern : tfrt::gpu::GpuAsyncOpConversionPattern<GemmOpType> {
 };
 
 }  // namespace
-
-mlir::LogicalResult GemmOpConversionRewrite(mlir::lmhlo_gpu::GEMMOp srcOp,
-                                            mlir::BlockAndValueMapping& mapping,
-                                            mlir::OpBuilder& builder) {
-  auto chain_type = builder.getType<tfrt::compiler::ChainType>();
-  auto chain =
-      builder.create<tfrt::compiler::NewChainOp>(srcOp->getLoc(), chain_type);
-  auto enclosing_func =
-      llvm::cast<mlir::FuncOp>(builder.getBlock()->getParentOp());
-  // The first argument is the GpuStream.
-  auto stream = enclosing_func.getArgument(0);
-  return GemmOpConversionRewrite(srcOp, chain, stream, mapping, builder);
-}
 
 void populateGemmConversionPattern(RewritePatternSet& patterns) {
   patterns.add<GemmRewritePattern<lmhlo_gpu::GEMMOp>,

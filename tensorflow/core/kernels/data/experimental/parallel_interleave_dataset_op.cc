@@ -223,7 +223,9 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
   }
 
  private:
-  int64 num_threads() const { return cycle_length_ + prefetch_input_elements_; }
+  int64_t num_threads() const {
+    return cycle_length_ + prefetch_input_elements_;
+  }
 
   // Parallel interleave's implementation is designed around a few principles:
   //  1. Thread creation is relatively expensive. (Not reusing
@@ -515,7 +517,7 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
       mutex_lock l(mu_);
       mutex_lock ckpt_l(ckpt_mu_);
       // Restore `interleave_indices_`.
-      std::set<int64> all_indices;
+      std::set<int64_t> all_indices;
       {
         int64_t interleave_size;
         TF_RETURN_IF_ERROR(
@@ -562,10 +564,11 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
       if (reader->Contains(prefix(), kWorkerThreadsRunning)) {
         worker_threads_.reserve(dataset()->num_threads());
         for (size_t i = 0; i < dataset()->num_threads(); ++i) {
-          std::shared_ptr<IteratorContext> new_ctx(new IteratorContext(*ctx));
           worker_threads_.emplace_back(ctx->StartThread(
               strings::StrCat(kDataParallelInterleaveWorker, "_", i),
-              [this, new_ctx, i]() { WorkerThread(new_ctx, i); }));
+              [this, ctx = std::make_shared<IteratorContext>(*ctx), i]() {
+                WorkerThread(ctx.get(), i);
+              }));
         }
       }
       return Status::OK();
@@ -584,7 +587,7 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
       Status status;
       // The buffered data element.
       std::vector<Tensor> output;
-      int64 id = -1;
+      int64_t id = -1;
 
       explicit OutputElem(const Status& s) : status(s) {}
       OutputElem(const Status& s, int64_t id) : status(s), id(id) {}
@@ -676,10 +679,11 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
             return Status::OK();
           }
           workers_[i].SetInputs(s, std::move(args));
-          std::shared_ptr<IteratorContext> new_ctx(new IteratorContext(*ctx));
           worker_threads_.push_back(ctx->StartThread(
               strings::StrCat(kDataParallelInterleaveWorker, "_", i),
-              [this, new_ctx, i]() { WorkerThread(new_ctx, i); }));
+              [this, ctx = std::make_shared<IteratorContext>(*ctx), i]() {
+                WorkerThread(ctx.get(), i);
+              }));
           if (i < dataset()->cycle_length_) {
             interleave_indices_.push_back(i);
           } else {
@@ -693,8 +697,7 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
     }
 
     // Produces elements into the worker's output buffers.
-    void WorkerThread(const std::shared_ptr<IteratorContext>& ctx,
-                      const int64_t thread_index) {
+    void WorkerThread(IteratorContext* ctx, int64_t thread_index) {
       // Notes on checkpointing thread local state, i.e., `WorkerThreadState`:
       //
       // 1. Any local state that may need to be checkpointed should be kept
@@ -715,11 +718,11 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
 
       // std::function arguments are copy-constructable, so we pass raw
       // pointers, and then immediately wrap them to ensure correct ownership.
-      RecordStart(ctx.get());
+      RecordStart(ctx);
       auto cleanup = gtl::MakeCleanup([this, thread_index, ctx] {
         mutex_lock l(mu_);
         workers_[thread_index].cond_var.notify_all();
-        RecordStop(ctx.get());
+        RecordStop(ctx);
       });
       bool make_new_iterator;
       {
@@ -756,9 +759,9 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
           if (read_new_input) {
             mutex_lock l(mu_);
             while (!cancelled_ && !workers_[thread_index].is_producing) {
-              RecordStop(ctx.get());
+              RecordStop(ctx);
               workers_[thread_index].cond_var.wait(l);
-              RecordStart(ctx.get());
+              RecordStart(ctx);
             }
             if (cancelled_) return;
             // Copy the input tensors so that we do not need to block on `mu_`
@@ -780,7 +783,7 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
             tf_shared_lock l(ckpt_mu_);
             worker_thread_states_[thread_index].iterator_creation_status =
                 MakeIteratorFromInputElement(
-                    ctx.get(), this, worker_thread_states_[thread_index].input,
+                    ctx, this, worker_thread_states_[thread_index].input,
                     thread_index, *instantiated_captured_func_, prefix(),
                     &worker_thread_states_[thread_index].iterator,
                     model_node());
@@ -809,9 +812,9 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
           // Wait for space in the prefetch queue.
           while (!cancelled_ && workers_[thread_index].outputs.size() ==
                                     dataset()->buffer_output_elements_) {
-            RecordStop(ctx.get());
+            RecordStop(ctx);
             workers_[thread_index].cond_var.wait(l);
-            RecordStart(ctx.get());
+            RecordStart(ctx);
           }
           if (cancelled_) return;
           tf_shared_lock ckpt_l(ckpt_mu_);
@@ -837,7 +840,8 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
                   worker_thread_states_[thread_index]
                       .output_elem.output.empty() &&
                   !worker_thread_states_[thread_index].end_of_sequence) {
-                int64& id = worker_thread_states_[thread_index].output_elem.id;
+                int64_t& id =
+                    worker_thread_states_[thread_index].output_elem.id;
                 profiler::TraceMe traceme(
                     [&] {
                       id = profiler::TraceMe::NewActivityId();
@@ -847,7 +851,7 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
                     profiler::kInfo);
                 worker_thread_states_[thread_index].output_elem.status =
                     worker_thread_states_[thread_index].iterator->GetNext(
-                        ctx.get(),
+                        ctx,
                         &worker_thread_states_[thread_index].output_elem.output,
                         &worker_thread_states_[thread_index].end_of_sequence);
                 end_of_sequence =
@@ -869,9 +873,9 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
               // Wait for space in the prefetch queue.
               while (!cancelled_ && workers_[thread_index].outputs.size() ==
                                         dataset()->buffer_output_elements_) {
-                RecordStop(ctx.get());
+                RecordStop(ctx);
                 workers_[thread_index].cond_var.wait(l);
-                RecordStart(ctx.get());
+                RecordStart(ctx);
               }
               if (cancelled_) return;
 
@@ -1089,7 +1093,7 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
         TF_EXCLUSIVE_LOCKS_REQUIRED(mu_, ckpt_mu_) {
       TF_RETURN_IF_ERROR(writer->WriteScalar(
           iterator_name, strings::StrCat(prefix, "_", kCode),
-          static_cast<int64>(status.code())));
+          static_cast<int64_t>(status.code())));
       if (!status.ok()) {
         TF_RETURN_IF_ERROR(writer->WriteScalar(
             iterator_name, strings::StrCat(prefix, "_", KMessage),
@@ -1155,9 +1159,9 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
         TF_GUARDED_BY(ckpt_mu_);
 
     // Indices in `workers_` of iterators to interleave.
-    std::vector<int64> interleave_indices_ TF_GUARDED_BY(mu_);
+    std::vector<int64_t> interleave_indices_ TF_GUARDED_BY(mu_);
     // Indices in `workers_` of prefetched iterators.
-    std::deque<int64> staging_indices_ TF_GUARDED_BY(mu_);
+    std::deque<int64_t> staging_indices_ TF_GUARDED_BY(mu_);
 
     // The index into output_elements_ for next element to produce.
     size_t next_index_ TF_GUARDED_BY(mu_) = 0;
@@ -1176,11 +1180,11 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
 
   const DatasetBase* const input_;
   const std::unique_ptr<CapturedFunction> captured_func_;
-  const int64 cycle_length_;
-  const int64 block_length_;
+  const int64_t cycle_length_;
+  const int64_t block_length_;
   const DeterminismPolicy deterministic_;
-  const int64 buffer_output_elements_;
-  const int64 prefetch_input_elements_;
+  const int64_t buffer_output_elements_;
+  const int64_t prefetch_input_elements_;
   const DataTypeVector output_types_;
   const std::vector<PartialTensorShape> output_shapes_;
   const TraceMeMetadata traceme_metadata_;

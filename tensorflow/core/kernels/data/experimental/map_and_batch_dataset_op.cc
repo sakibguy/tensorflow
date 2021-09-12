@@ -19,10 +19,10 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
-#include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/stats_utils.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
@@ -75,7 +75,10 @@ constexpr char kOutputAllocated[] = "output_allocated";
 constexpr char kStatus[] = "status";
 
 // Computes ceil(x / y).
-inline int64 CeilDiv(int64_t x, int64_t y) { return (x + y - 1) / y; }
+inline int64_t CeilDiv(int64_t x, int64_t y) { return (x + y - 1) / y; }
+
+// Period between reporting dataset statistics.
+constexpr int kStatsReportingPeriodMillis = 1000;
 
 }  // namespace
 
@@ -123,7 +126,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType);
   }
 
-  int64 Cardinality() const override {
+  int64_t Cardinality() const override {
     if (!preserve_cardinality_) {
       return kUnknownCardinality;
     }
@@ -203,7 +206,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
       max_batch_results_ = std::min(
           kMaxBatchResults,
           CeilDiv(params.dataset->num_parallel_calls_ == model::kAutotune
-                      ? port::NumSchedulableCPUs()  // maximum parallelism
+                      ? GetCpuBudget()  // maximum parallelism
                       : params.dataset->num_parallel_calls_,
                   params.dataset->batch_size_));
     }
@@ -368,35 +371,24 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
 
       mutex mu;
       bool end_of_input TF_GUARDED_BY(mu);
-      int64 num_elements TF_GUARDED_BY(mu);
+      int64_t num_elements TF_GUARDED_BY(mu);
       std::vector<Tensor> output;
       bool output_allocated TF_GUARDED_BY(mu);
       Status status TF_GUARDED_BY(mu);
-      int64 status_offset TF_GUARDED_BY(mu);
+      int64_t status_offset TF_GUARDED_BY(mu);
       // Counts the number of outstanding calls for this batch.
-      int64 num_calls TF_GUARDED_BY(&Iterator::mu_);
+      int64_t num_calls TF_GUARDED_BY(&Iterator::mu_);
       const uint64 uid = -1;
     };
 
-    void CallCompleted(const std::shared_ptr<IteratorContext>& ctx,
-                       const std::shared_ptr<BatchResult>& result)
-        TF_LOCKS_EXCLUDED(*mu_) {
+    void CallCompleted(BatchResult* result) TF_LOCKS_EXCLUDED(*mu_) {
       mutex_lock l(*mu_);
       num_calls_--;
       result->num_calls--;
-      const auto& stats_aggregator = ctx->stats_aggregator();
-      if (stats_aggregator) {
-        stats_aggregator->AddScalar(
-            stats_utils::ThreadUtilizationScalarName(dataset()->node_name()),
-            static_cast<float>(num_calls_) /
-                static_cast<float>(num_parallel_calls_->value),
-            num_elements());
-      }
       cond_var_->notify_all();
     }
 
-    void CallFunction(std::shared_ptr<IteratorContext> ctx,
-                      const std::shared_ptr<BatchResult>& result,
+    void CallFunction(std::shared_ptr<IteratorContext> ctx, BatchResult* result,
                       int64_t offset) TF_LOCKS_EXCLUDED(*mu_) {
       profiler::TraceMe traceme([&] {
         return profiler::TraceMeEncode("MapAndBatchProduce",
@@ -415,7 +407,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
         return_early = result->end_of_input || !result->status.ok();
       }
       if (return_early) {
-        CallCompleted(ctx, result);
+        CallCompleted(result);
         return;
       }
 
@@ -433,7 +425,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
         result->UpdateStatus(status, offset);
         if (status.ok()) {
           Status allocate_status =
-              EnsureOutputAllocated(ctx, result, return_values);
+              EnsureOutputAllocated(ctx.get(), *return_values, result);
           if (!allocate_status.ok()) {
             result->UpdateStatus(allocate_status, offset);
           } else {
@@ -469,7 +461,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
             result->num_elements++;
           }
         }
-        CallCompleted(ctx, result);
+        CallCompleted(result);
       };
 
       // Apply the map function on `input_element`, storing the result in
@@ -493,47 +485,53 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
     void EnsureRunnerThreadStarted(IteratorContext* ctx)
         TF_EXCLUSIVE_LOCKS_REQUIRED(*mu_) {
       if (!runner_thread_) {
-        auto ctx_copy = std::make_shared<IteratorContext>(*ctx);
         runner_thread_ = ctx->StartThread(
-            kTFDataMapAndBatch,
-            std::bind(&Iterator::RunnerThread, this, ctx_copy));
+            "tf_data_map_and_batch",
+            [this, ctx = std::make_shared<IteratorContext>(*ctx)]() {
+              RunnerThread(ctx);
+            });
+        if (ctx->stats_aggregator()) {
+          stats_thread_ = ctx->StartThread(
+              "tf_data_map_and_batch_stats",
+              [this, ctx = std::make_shared<IteratorContext>(*ctx)]() {
+                StatsThread(ctx.get());
+              });
+        }
       }
     }
 
-    Status EnsureOutputAllocated(
-        const std::shared_ptr<IteratorContext>& ctx,
-        const std::shared_ptr<BatchResult>& result,
-        const std::shared_ptr<std::vector<Tensor>>& return_values) {
+    Status EnsureOutputAllocated(IteratorContext* ctx,
+                                 const std::vector<Tensor>& return_values,
+                                 BatchResult* result) {
       mutex_lock l(result->mu);
       if (result->output_allocated) {
         return Status::OK();
       }
-      const size_t num_components = return_values->size();
+      const size_t num_components = return_values.size();
       result->output.reserve(num_components);
       for (size_t i = 0; i < num_components; ++i) {
         TensorShape component_shape({dataset()->batch_size_});
-        component_shape.AppendShape(return_values->at(i).shape());
+        component_shape.AppendShape(return_values.at(i).shape());
         AllocatorAttributes attr;
         attr.set_gpu_compatible(true);
-        result->output.emplace_back(ctx->allocator(attr),
-                                    return_values->at(i).dtype(),
-                                    component_shape);
+        result->output.emplace_back(
+            ctx->allocator(attr), return_values.at(i).dtype(), component_shape);
         if (!result->output.back().IsInitialized()) {
           return errors::ResourceExhausted(
               "Failed to allocate memory for the batch of component ", i);
         }
       }
-      RecordBufferEnqueue(ctx.get(), result->output);
+      RecordBufferEnqueue(ctx, result->output);
       result->output_allocated = true;
       return Status::OK();
     }
 
-    void RunnerThread(const std::shared_ptr<IteratorContext>& ctx)
+    void RunnerThread(std::shared_ptr<IteratorContext> ctx)
         TF_LOCKS_EXCLUDED(*mu_) {
-      std::vector<std::pair<std::shared_ptr<BatchResult>, int64>> new_calls;
+      std::vector<std::pair<std::shared_ptr<BatchResult>, int64_t>> new_calls;
       RecordStart(ctx.get());
       auto stop_cleanup =
-          gtl::MakeCleanup([this, &ctx]() { RecordStop(ctx.get()); });
+          gtl::MakeCleanup([this, ctx]() { RecordStop(ctx.get()); });
       {
         tf_shared_lock l(*mu_);  // mu_ == num_parallel_calls_->mu
         new_calls.reserve(num_parallel_calls_->value);
@@ -577,19 +575,38 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
             num_calls_++;
           }
         }
-        const auto& stats_aggregator = ctx->stats_aggregator();
-        if (stats_aggregator) {
-          mutex_lock l(*mu_);
-          stats_aggregator->AddScalar(
-              stats_utils::ThreadUtilizationScalarName(dataset()->node_name()),
-              static_cast<float>(num_calls_) /
-                  static_cast<float>(num_parallel_calls_->value),
-              num_elements());
-        }
         for (const auto& call : new_calls) {
-          CallFunction(ctx, call.first, call.second);
+          CallFunction(ctx, call.first.get(), call.second);
         }
         new_calls.clear();
+      }
+    }
+
+    void StatsThread(IteratorContext* ctx) {
+      for (int64_t step = 0;; ++step) {
+        int num_calls;
+        int num_parallel_calls;
+        {
+          mutex_lock l(*mu_);
+          if (step != 0 && !cancelled_) {
+            cond_var_->wait_for(
+                l, std::chrono::milliseconds(kStatsReportingPeriodMillis));
+          }
+          if (cancelled_) {
+            return;
+          }
+          num_calls = num_calls_;
+          num_parallel_calls = num_parallel_calls_->value;
+        }
+        if (num_parallel_calls == 0) {
+          // Avoid division by zero.
+          num_parallel_calls = 1;
+        }
+        ctx->stats_aggregator()->AddScalar(
+            stats_utils::ThreadUtilizationScalarName(dataset()->node_name()),
+            static_cast<float>(num_calls) /
+                static_cast<float>(num_parallel_calls),
+            step);
       }
     }
 
@@ -616,7 +633,9 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
       TF_RETURN_IF_ERROR(ReadStatus(prefix(),
                                     strings::StrCat(batch_prefix, "_", kStatus),
                                     reader, &result->status));
-      RecordBufferEnqueue(ctx, result->output);
+      if (result->output_allocated) {
+        RecordBufferEnqueue(ctx, result->output);
+      }
       return Status::OK();
     }
 
@@ -666,20 +685,25 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
     // `input_impl_` so that `input_impl_` is destroyed first.
     std::unique_ptr<CancellationManager> cancellation_manager_;
     // Counts the number of outstanding calls for this batch.
-    int64 num_calls_ TF_GUARDED_BY(*mu_) = 0;
+    int64_t num_calls_ TF_GUARDED_BY(*mu_) = 0;
     // Counts the total number of calls.
-    int64 call_counter_ TF_GUARDED_BY(*mu_) = 0;
+    int64_t call_counter_ TF_GUARDED_BY(*mu_) = 0;
     std::unique_ptr<IteratorBase> input_impl_;
-    // Buffer for storing the (intermediate) batch results.
+    // Buffer for storing the (intermediate) batch results. Whenever an
+    // output-allocated batch result is added to or removed from
+    // `batch_results_`, call `RecordBufferEnqueue` or `RecordBufferDequeue`
+    // respectively.
     std::deque<std::shared_ptr<BatchResult>> batch_results_ TF_GUARDED_BY(*mu_);
     // Background thread used for coordinating input processing.
     std::unique_ptr<Thread> runner_thread_ TF_GUARDED_BY(*mu_);
+    // Background thread used for collecting statistics.
+    std::unique_ptr<Thread> stats_thread_ TF_GUARDED_BY(*mu_);
     // Determines whether the transformation has been cancelled.
     bool cancelled_ TF_GUARDED_BY(*mu_) = false;
     // Identifies the number of callers currently waiting for a batch result.
-    int64 waiting_ TF_GUARDED_BY(*mu_) = 0;
+    int64_t waiting_ TF_GUARDED_BY(*mu_) = 0;
     // Identifies the maximum number of batch results to store.
-    int64 max_batch_results_ TF_GUARDED_BY(*mu_);
+    int64_t max_batch_results_ TF_GUARDED_BY(*mu_);
     std::unique_ptr<InstantiatedCapturedFunction> instantiated_captured_func_;
 
     // Method for deregistering the cancellation callback.
@@ -687,8 +711,8 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
   };
 
   const DatasetBase* const input_;
-  const int64 batch_size_;
-  const int64 num_parallel_calls_;
+  const int64_t batch_size_;
+  const int64_t num_parallel_calls_;
   const bool drop_remainder_;
   const DataTypeVector output_types_;
   const std::vector<PartialTensorShape> output_shapes_;

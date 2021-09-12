@@ -84,9 +84,9 @@ tf_py_test(
 )
 
 tf_py_test(
-    name = "distributed_epoch_test",
+    name = "dynamic_sharding_test",
     size = "medium",
-    srcs = ["distributed_epoch_test.py"],
+    srcs = ["dynamic_sharding_test.py"],
     shard_count = 16,
     deps = [
         ":test_base",
@@ -130,6 +130,7 @@ tf_py_test(
     deps = [
         ":multi_process_cluster",
         ":test_base",
+        "//tensorflow/python/data/experimental/ops:data_service_ops",
         "//tensorflow/python/data/kernel_tests:test_base",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/framework:combinations",

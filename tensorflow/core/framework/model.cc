@@ -1589,18 +1589,17 @@ Status Node::FromProto(ModelProto::Node node_proto,
   return FromProtoHelper(node_proto, *node);
 }
 
-Model::Model()
-    : collect_resource_usage_(false),
-      optimization_period_ms_(kOptimizationPeriodMinMs) {
+Model::Model() : optimization_period_ms_(kOptimizationPeriodMinMs) {
   model_gauge_cell_ = metrics::GetTFDataModelGauge(
       strings::StrCat(reinterpret_cast<uint64>(this)));
   model_gauge_cell_->Set([&]() { return DebugString(); });
 }
 
 Model::~Model() {
-  // Before the model is destroyed, we record its final state in the gauge.
-  auto result = DebugString();
-  model_gauge_cell_->Set([result]() { return result; });
+  // Before the model is destroyed, we record an empty string in the gauge to
+  // prevent race condition where the gauge callback is called after the Model
+  // is destroyed.
+  model_gauge_cell_->Set([]() { return std::string(); });
 }
 
 void Model::AddNode(Node::Factory factory, const string& name,
@@ -1621,8 +1620,6 @@ void Model::AddNode(Node::Factory factory, const string& name,
   } else {
     VLOG(3) << "Adding " << node->long_name();
   }
-  collect_resource_usage_ =
-      collect_resource_usage_ || node->has_tunable_parameters();
   *out_node = std::move(node);
   // TODO(jsimsa): Reset the optimization period when a node is added so that
   // autotuning adapts to changes to the input pipeline faster. Initial attempt
@@ -1934,7 +1931,6 @@ double Model::TotalProcessingTime(std::shared_ptr<Node> node) {
 Status Model::ToProto(ModelProto* model_proto) {
   tf_shared_lock l(mu_);
   model_proto->set_id_counter(id_counter_);
-  model_proto->set_collect_resource_usage(collect_resource_usage_);
   return ModelToProtoHelper(output_, model_proto);
 }
 
@@ -1944,8 +1940,6 @@ Status Model::FromProto(ModelProto model_proto, std::unique_ptr<Model>* model) {
   TF_RETURN_IF_ERROR(
       ModelFromProtoHelper(model_proto, &restored_model->output_));
   restored_model->id_counter_ = model_proto.id_counter();
-  restored_model->collect_resource_usage_.store(
-      model_proto.collect_resource_usage());
   *model = std::move(restored_model);
   return Status::OK();
 }
@@ -1958,7 +1952,6 @@ Status Model::Save(const string& fname, std::shared_ptr<Node> snapshot,
     mutex_lock l(model_snapshot->mu_);
     model_snapshot->output_ = std::move(snapshot);
     model_snapshot->id_counter_ = id_counter_;
-    model_snapshot->collect_resource_usage_.store(collect_resource_usage_);
   }
   TF_RETURN_IF_ERROR(model_snapshot->ToProto(&model_proto));
   OptimizationParams* saved_optimization_params =

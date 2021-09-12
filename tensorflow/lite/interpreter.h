@@ -42,6 +42,7 @@ limitations under the License.
 #include "tensorflow/lite/internal/signature_def.h"
 #include "tensorflow/lite/memory_planner.h"
 #include "tensorflow/lite/portable_type_to_tflitetype.h"
+#include "tensorflow/lite/signature_runner.h"
 #include "tensorflow/lite/stderr_reporter.h"
 #include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/type_to_tflitetype.h"
@@ -307,6 +308,17 @@ class Interpreter {
   }
 
   /// WARNING: Experimental interface, subject to change
+  /// Returns a pointer to the SignatureRunner instance to run the part of the
+  /// graph identified by a SignatureDef. The nullptr is returned if the given
+  /// signature key is not valid.
+  /// If you need to specify delegates, you have to do that before calling this
+  /// function. This function will additionally apply default delegates. Thus,
+  /// applying delegates after that might lead to undesirable behaviors.
+  /// Note, the pointed instance has lifetime same as the Interpreter object
+  /// and the SignatureRunner class is *not* thread-safe.
+  SignatureRunner* GetSignatureRunner(const char* signature_key);
+
+  /// WARNING: Experimental interface, subject to change
   // Return the subgraph index that corresponds to a SignatureDef, defined by
   // 'signature_key'.
   // If invalid name passed, -1 will be returned.
@@ -353,9 +365,12 @@ class Interpreter {
   /// Returns nullptr if not found.
   TfLiteTensor* input_tensor_by_signature(const char* signature_input_name,
                                           const char* signature_key) {
+    const int subgraph_index = GetSubgraphIndexFromSignature(signature_key);
+    if (subgraph_index == -1) return nullptr;
     const int tensor_index = GetTensorIndexFromSignature(
         signature_input_name, signature_key, /*is_input=*/true);
-    return tensor_index == -1 ? nullptr : tensor(tensor_index);
+    if (tensor_index == -1) return nullptr;
+    return subgraph(subgraph_index)->tensor(tensor_index);
   }
 
   /// WARNING: Experimental interface, subject to change
@@ -364,9 +379,12 @@ class Interpreter {
   /// Returns nullptr if not found.
   const TfLiteTensor* output_tensor_by_signature(
       const char* signature_output_name, const char* signature_key) const {
+    const int subgraph_index = GetSubgraphIndexFromSignature(signature_key);
+    if (subgraph_index == -1) return nullptr;
     const int tensor_index = GetTensorIndexFromSignature(
         signature_output_name, signature_key, /*is_input=*/false);
-    return tensor_index == -1 ? nullptr : tensor(tensor_index);
+    if (tensor_index == -1) return nullptr;
+    return subgraph(subgraph_index)->tensor(tensor_index);
   }
 
   /// Return a mutable pointer to the given input tensor. The given index must
@@ -464,6 +482,14 @@ class Interpreter {
   /// to disable multithreading, which is equivalent to setting num_threads
   /// to 1. If set to the value -1, the number of threads used will be
   /// implementation-defined and platform-dependent.
+  ///
+  /// As TfLite interpreter could internally apply a TfLite delegate by default
+  /// (i.e. XNNPACK), the number of threads that are available to the default
+  /// delegate *should be* set via InterpreterBuilder APIs as follows:
+  /// std::unique_ptr<tflite::Interpreter> interpreter;
+  /// tflite::InterpreterBuilder builder(tflite model, op resolver);
+  /// builder.SetNumThreads(...)
+  /// ASSERT_EQ(builder(&interpreter), kTfLiteOk);
   TfLiteStatus SetNumThreads(int num_threads);
 
   /// Allow float16 precision for FP32 calculation when possible.
@@ -622,9 +648,9 @@ class Interpreter {
   // `flags` is a bitmask, see TfLiteCustomAllocationFlags.
   // The runtime does NOT take ownership of the underlying memory.
   //
-  // NOTE: User needs to call AllocateTensors() after this. In case of input
-  // resizing, buffers will be checked for required data size during
-  // AllocateTensors().
+  // NOTE: User needs to call AllocateTensors() after this.
+  // Invalid/insufficient buffers will cause an error during AllocateTensors or
+  // Invoke (in case of dynamic shapes in the graph).
   //
   // Parameters should satisfy the following conditions:
   // 1. tensor->allocation_type == kTfLiteArenaRw or kTfLiteArenaRwPersistent
@@ -737,6 +763,9 @@ class Interpreter {
   // Returns true if delegates have been applied.
   bool HasDelegates();
 
+  // Returns true if the model has been fully delegated.
+  bool IsFullyDelegated() const;
+
   // Returns true if cancellation function returns true.
   bool IsCancelled();
 
@@ -809,9 +838,13 @@ class Interpreter {
   // delegates have been applied and doesn't need to be applied again.
   std::vector<TfLiteDelegatePtr> lazy_delegate_providers_;
 
-  // List of signature def mapping inputs/output to tensor ids.
-  // We just keep track of tensor index.
+  // List of SignatureDefs obtained from the model.
   std::vector<internal::SignatureDef> signature_defs_;
+
+  // Map of signature key to its corresponding SignatureRunner object.
+  // A SignatureRunner is basically a wrapper of the Subgraph corresponding to
+  // its SignatureDef.
+  std::map<std::string, SignatureRunner> signature_runner_map_;
 
   // Model metadata stored as mapping of name (key) to buffer (value).
   // Data is mapped from the Metadata in TFLite flatbuffer model.

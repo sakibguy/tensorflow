@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer_registry.h"
 #include "tensorflow/core/grappler/optimizers/data/graph_utils.h"
 #include "tensorflow/core/grappler/utils/functions.h"
+#include "tensorflow/core/kernels/data/shard_dataset_op.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/errors.h"
 
@@ -156,8 +157,8 @@ Status AddShardNode(MutableGraphView* graph, const NodeDef& add_before,
 
   // Construct argument nodes
   NodeDef* num_shards_node =
-      graph_utils::AddScalarConstNode<int64>(num_workers, graph);
-  NodeDef* index_node = graph_utils::AddScalarConstNode<int64>(index, graph);
+      graph_utils::AddScalarConstNode<int64_t>(num_workers, graph);
+  NodeDef* index_node = graph_utils::AddScalarConstNode<int64_t>(index, graph);
 
   // Add inputs to new node
   new_node.add_input(add_before.input(0));
@@ -165,7 +166,8 @@ Status AddShardNode(MutableGraphView* graph, const NodeDef& add_before,
   new_node.add_input(index_node->name());
 
   // Ensure that each shard will have at least one element.
-  (*(new_node.mutable_attr()))["require_non_empty"].set_b(true);
+  (*(new_node.mutable_attr()))[data::ShardDatasetOp::kRequireNonEmpty].set_b(
+      true);
 
   // Add shapes and other attributes
   NodeDef* add_after = graph->GetNode(add_before.input(0));
@@ -555,7 +557,7 @@ Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
 }
 
 // Recursively walk the dataset graph from sink to source, searching for
-// the first (i.e. closest to the sink) occurence of a ReaderDataset, such as
+// the first (i.e. closest to the sink) occurrence of a ReaderDataset, such as
 // CSVDataset, TFRecordDataset, etc. We then insert a ShardDataset op before
 // that nodes input, so that each worker only reads a subset of files.
 // Additionally, we remove sources of randomness (e.g. ShuffleDataset) that
@@ -638,7 +640,7 @@ Status ShardByData(const NodeDef& sink_node, int64_t num_workers, int64_t index,
   return AddShardNode(graph, *shard_before, num_workers, index);
 }
 
-// Searches the dataset graph replacing any occurence of `shard(1, 0)` with
+// Searches the dataset graph replacing any occurrence of `shard(1, 0)` with
 // `shard(num_workers, index)`.
 Status ShardByHint(const NodeDef& sink_node, int64_t num_workers, int64_t index,
                    int64_t num_replicas, MutableGraphView* graph) {
@@ -653,9 +655,9 @@ Status ShardByHint(const NodeDef& sink_node, int64_t num_workers, int64_t index,
   };
 
   auto* num_workers_node =
-      graph_utils::AddScalarConstNode(static_cast<int64>(num_workers), graph);
+      graph_utils::AddScalarConstNode(static_cast<int64_t>(num_workers), graph);
   auto* worker_index_node =
-      graph_utils::AddScalarConstNode(static_cast<int64>(index), graph);
+      graph_utils::AddScalarConstNode(static_cast<int64_t>(index), graph);
 
   for (const NodeDef& node : graph->graph()->node()) {
     const NodeDef* shard_node = get_shard_node(node);
@@ -663,6 +665,9 @@ Status ShardByHint(const NodeDef& sink_node, int64_t num_workers, int64_t index,
     auto mutable_node = graph->GetNode(shard_node->name());
     *mutable_node->mutable_input(1) = num_workers_node->name();
     *mutable_node->mutable_input(2) = worker_index_node->name();
+    // Ensure that each shard will have at least one element.
+    (*(mutable_node->mutable_attr()))[data::ShardDatasetOp::kRequireNonEmpty]
+        .set_b(true);
   }
   return Status::OK();
 }

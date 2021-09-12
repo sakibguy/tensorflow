@@ -15,7 +15,7 @@ limitations under the License.
 
 include "mlir/Pass/PassBase.td"
 
-def LmhloGpuAsyncConversionPass : FunctionPass<"lmhlo-gpu-async-conversion"> {
+def LmhloGpuAsyncConversionPass : FunctionPass<"lmhlo-to-gpu"> {
   let summary = "Convert lmhlo_gpu ops to tfrt_gpu dialect.";
   let description = [{
     Move lmhlo_gpu ops inside tfrt_gpu_conversion.execute ops and convert them
@@ -26,21 +26,7 @@ def LmhloGpuAsyncConversionPass : FunctionPass<"lmhlo-gpu-async-conversion"> {
     "::mlir::gpu::GPUDialect",
     "::tfrt::compiler::TFRTDialect",
     "::tfrt::gpu::GpuDialect",
-    "::tfrt::gpu::conversion::GpuConversionDialect"
-  ];
-}
-
-def AsyncGpuTfrtConversionPass : FunctionPass<"async-gpu-tfrt-conversion"> {
-  let summary = "Convert function to bef thunk signature.";
-  let description = [{
-    Move bodies of tfrt_gpu_conversion.execute ops into parent region and add
-    !tfrt.chain result, !tfrt.chain and !tfrt_gpu.stream argument to function.
-  }];
-  let constructor = "createAsyncGpuTfrtConversionPass()";
-  let dependentDialects = [
-    "::mlir::gpu::GPUDialect",
-    "::tfrt::compiler::TFRTDialect",
-    "::tfrt::gpu::GpuDialect",
-    "::tfrt::gpu::conversion::GpuConversionDialect"
+    "::tfrt::gpu::conversion::GpuConversionDialect",
+    "::xla::gpu::XlirDialect"
   ];
 }

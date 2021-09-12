@@ -46,6 +46,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops_base_enums.h"
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/lhlo_gpu_ops.h"
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/lhlo_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/xla/attribute_importer.h"
 #include "tensorflow/compiler/mlir/xla/hlo_function_importer.h"
 #include "tensorflow/compiler/mlir/xla/hlo_utils.h"
@@ -98,10 +99,6 @@ StatusOr<std::unique_ptr<HloModule>> HloModuleFromProto(
   return HloModule::CreateFromProto(module_proto, module_config);
 }
 
-bool AllocationShouldLowerToTypedArg(const BufferAllocation* alloc) {
-  return alloc->is_entry_computation_parameter() && !alloc->maybe_live_out();
-}
-
 }  // namespace
 
 // Convert the MLIR `module` from HLO dialect to LHLO dialect using XLA for the
@@ -133,16 +130,23 @@ Status OptimizeAndConvertHloToLmhlo(std::unique_ptr<HloModule> hlo_module,
                                   "failed to create XLA Backend ");
   auto backend = std::move(backend_or_err.ValueOrDie());
 
-  // Run all HLO passes to produce an optimized module.
-  auto result_or = backend->compiler()->RunHloPassesAndBufferAssignement(
-      std::move(hlo_module), backend->default_stream_executor(),
-      optimize_xla_hlo, {backend->memory_allocator()});
-  TF_RETURN_WITH_CONTEXT_IF_ERROR(result_or.status(),
-                                  "running XLA pass pipeline");
-  std::unique_ptr<HloModule> optimized_hlo_module =
-      std::move(std::get<0>(result_or.ValueOrDie()));
-  std::unique_ptr<BufferAssignment> assignment =
-      std::move(std::get<1>(result_or.ValueOrDie()));
+  StatusOr<std::unique_ptr<HloModule>> optimized_hlo_module;
+
+  if (optimize_xla_hlo) {
+    // Run all HLO passes to produce an optimized module.
+    optimized_hlo_module = backend->compiler()->RunHloPasses(
+        std::move(hlo_module), backend->default_stream_executor(),
+        backend->memory_allocator());
+    TF_RETURN_WITH_CONTEXT_IF_ERROR(optimized_hlo_module.status(),
+                                    "running XLA pass pipeline");
+  } else {
+    optimized_hlo_module = std::move(hlo_module);
+  }
+
+  StatusOr<std::unique_ptr<BufferAssignment>> assignment =
+      backend->compiler()->AssignBuffers(optimized_hlo_module->get());
+  TF_RETURN_WITH_CONTEXT_IF_ERROR(assignment.status(),
+                                  "running XLA buffer assigment");
 
   // Clear the module before populating it back with the result of the
   // conversion.
@@ -150,7 +154,7 @@ Status OptimizeAndConvertHloToLmhlo(std::unique_ptr<HloModule> hlo_module,
   OpBuilder builder(module);
 
   TF_RETURN_WITH_CONTEXT_IF_ERROR(
-      HloToLhloModule(*assignment, *optimized_hlo_module, module),
+      HloToLhloModule(**assignment, **optimized_hlo_module, module),
       "converting HLO to LHLO");
 
   return Status::OK();
@@ -221,13 +225,12 @@ class XlaHloToLhloPass
 // instruction. If `num_operands` is valid, then only the first `num_operands`
 // operands of the HLO instruction will be considered.
 Status LhloDialectEmitter::CreateOperands(
-    const HloInstruction* instr, absl::optional<xla::int64> num_operands,
+    const HloInstruction* instr, absl::optional<int64_t> num_operands,
     TokenLoweringMode token_mode, llvm::SmallVectorImpl<Value>& operands,
     size_t& num_arguments, size_t& num_results) {
   if (num_operands.value_or(0) > instr->operand_count())
     return xla::InvalidArgument("num_operands must be <= operand count");
-  for (xla::int64 i = 0; i < num_operands.value_or(instr->operand_count());
-       ++i) {
+  for (int64_t i = 0; i < num_operands.value_or(instr->operand_count()); ++i) {
     TF_RETURN_IF_ERROR(GetOrCreateView(instr->operand(i), &operands,
                                        /*result_subset=*/{}, token_mode));
   }
@@ -249,7 +252,7 @@ OpType LhloDialectEmitter::CreateOpWithoutAttrs(const HloInstruction* instr,
 template <typename OpType>
 StatusOr<OpType> LhloDialectEmitter::CreateOpWithoutAttrs(
     const HloInstruction* instr, size_t& num_arguments, size_t& num_results,
-    absl::optional<xla::int64> num_operands) {
+    absl::optional<int64_t> num_operands) {
   llvm::SmallVector<Value, 4> operands;
   TF_RETURN_IF_ERROR(CreateOperands(instr, num_operands,
                                     TokenLoweringMode::kFailToLower, operands,
@@ -599,7 +602,7 @@ LhloDialectEmitter::GetScatterDimensionNumbers(const HloInstruction* instr,
 
   mlir::Builder builder(context);
   auto get_i64_array_attr =
-      [builder](absl::Span<const xla::int64> container) mutable {
+      [builder](absl::Span<const int64_t> container) mutable {
         return builder.getI64TensorAttr(
             {container.data(), static_cast<size_t>(container.size())});
       };
@@ -742,10 +745,15 @@ StatusOr<mlir::Operation*> LhloDialectEmitter::EmitCustomCallOp(
   }
 
   auto custom_call = CreateOpWithoutAttrs<lmhlo::CustomCallOp>(instr, operands);
+  TF_ASSIGN_OR_RETURN(
+      auto mlir_api_version,
+      ConvertCustomCallApiVersion(custom_call_instr->api_version()));
   custom_call.call_target_nameAttr(
       builder_.getStringAttr(custom_call_instr->custom_call_target()));
   custom_call.backend_configAttr(
       builder_.getStringAttr(custom_call_instr->opaque()));
+  custom_call.api_versionAttr(mhlo::CustomCallApiVersionAttr::get(
+      builder_.getContext(), mlir_api_version));
   const int32_t segments[2] = {static_cast<int32_t>(num_arguments),
                                static_cast<int32_t>(num_results)};
   custom_call->setAttr(lmhlo::CustomCallOp::getOperandSegmentSizeAttr(),
@@ -842,7 +850,7 @@ StatusOr<Operation*> LhloDialectEmitter::EmitDnnConvolution(
   auto get_layout_attribute = [&](const xla::Layout& layout) {
     std::vector<int64_t> minor_to_major(layout.minor_to_major_size());
     absl::c_transform(layout.minor_to_major(), minor_to_major.begin(),
-                      [](xla::int64 x) { return static_cast<int64_t>(x); });
+                      [](int64_t x) { return static_cast<int64_t>(x); });
     return builder_.getI64ArrayAttr(minor_to_major);
   };
 
@@ -953,7 +961,7 @@ StatusOr<Operation*> LhloDialectEmitter::EmitDnnConvolution(
 
 StatusOr<Operation*> LhloDialectEmitter::EmitDnnBatchNorm(
     const HloCustomCallInstruction* custom_call) {
-  const xla::int64 num_operands = custom_call->operand_count();
+  const int64_t num_operands = custom_call->operand_count();
   auto set_batchnorm_attributes = [&](auto op) -> StatusOr<Operation*> {
     // The last 2 operands of a custom call for batch norm are the epsilon and
     // feature_index.
@@ -964,8 +972,7 @@ StatusOr<Operation*> LhloDialectEmitter::EmitDnnBatchNorm(
     const HloInstruction* feature_index =
         custom_call->operand(num_operands - 1);
     TF_RET_CHECK(feature_index->IsConstant());
-    xla::int64 feature_index_value =
-        feature_index->literal().Get<xla::int64>({});
+    int64_t feature_index_value = feature_index->literal().Get<int64_t>({});
 
     op.epsilonAttr(builder_.getF32FloatAttr(epsilon_value));
     op.feature_indexAttr(builder_.getI64IntegerAttr(feature_index_value));
@@ -1394,30 +1401,23 @@ StatusOr<Value> LhloDialectEmitter::GetOrCreateArrayView(
   // TODO(timshen): revisit location handling.
   Location loc = builder_.getUnknownLoc();
 
-  Value result;
-  if (AllocationShouldLowerToTypedArg(slice.allocation())) {
-    TF_RET_CHECK(slice.offset() == 0);
-    TF_RET_CHECK(slice.size() == slice.allocation()->size());
-    result = alloc;
-  } else {
-    Value byte_shift =
-        builder_.create<ConstantIndexOp>(alloc.getLoc(), slice.offset());
+  Value byte_shift =
+      builder_.create<ConstantIndexOp>(alloc.getLoc(), slice.offset());
 
-    xla::Shape physical_shape =
-        xla::ShapeUtil::MakeShapeWithDescendingLayoutAndSamePhysicalLayout(
-            static_shape);
-    TF_ASSIGN_OR_RETURN(
-        Type physical_out_type,
-        xla::ConvertShapeToType<MemRefType>(physical_shape, builder_));
+  xla::Shape physical_shape =
+      xla::ShapeUtil::MakeShapeWithDescendingLayoutAndSamePhysicalLayout(
+          static_shape);
+  TF_ASSIGN_OR_RETURN(
+      Type physical_out_type,
+      xla::ConvertShapeToType<MemRefType>(physical_shape, builder_));
 
-    // ViewOp only takes memrefs without affine maps (layouts). Let ViewOp
-    // produce the physical shape (where dimensions are ordered in major to
-    // minor) first, then follow up with a MemRefReinterpretCast to cast the
-    // resulting memref to the original layout.
-    result = builder_.create<memref::ViewOp>(loc, physical_out_type, alloc,
-                                             byte_shift,
-                                             /*sizes=*/ValueRange{});
-  }
+  // ViewOp only takes memrefs without affine maps (layouts). Let ViewOp
+  // produce the physical shape (where dimensions are ordered in major to
+  // minor) first, then follow up with a MemRefReinterpretCast to cast the
+  // resulting memref to the original layout.
+  Value result =
+      builder_.create<memref::ViewOp>(loc, physical_out_type, alloc, byte_shift,
+                                      /*sizes=*/ValueRange{});
   if (result.getType() != out_type) {
     int64_t out_offset;
     SmallVector<int64_t, 4> out_strides;
@@ -1575,26 +1575,7 @@ Status LhloDialectEmitter::Initialize() {
     // need (mainly the type structure, potentially containing tuples) to be
     // preserved. They are not needed if the generated LMHLO is not sent to XLA.
     NamedAttrList arg_attr_list;
-    mlir::Type arg_type;
-    if (AllocationShouldLowerToTypedArg(alloc)) {
-      xla::Shape buffer_shape = xla::ShapeUtil::GetSubshape(
-          computation_.parameter_instruction(alloc->parameter_number())
-              ->shape(),
-          alloc->param_shape_index());
-
-      if (buffer_shape.IsTuple()) {
-        arg_type = MemRefType::get({alloc->size()}, i8_type_);
-      } else {
-        // TODO(jurahul): Revisit this when we can model memrefs with dynamic
-        // shape but static bounds in MLIR.
-        const Shape static_shape =
-            xla::ShapeUtil::MakeStaticShape(buffer_shape);
-        TF_ASSIGN_OR_RETURN(arg_type, xla::ConvertShapeToType<MemRefType>(
-                                          static_shape, builder_));
-      }
-    } else {
-      arg_type = MemRefType::get({alloc->size()}, i8_type_);
-    }
+    mlir::Type arg_type = MemRefType::get({alloc->size()}, i8_type_);
 
     if (alloc->is_entry_computation_parameter()) {
       arg_attr_list.set("lmhlo.params",
@@ -1678,10 +1659,15 @@ Status HloToLhloModule(const BufferAssignment& assignment,
       assignment.hlo_ordering().SequentialOrder(*computation);
   if (!schedule)
     return xla::Unimplemented("Missing sequential order for the computation");
+
+  StatusScopedDiagnosticHandler status_handler(module.getContext());
+
   const std::vector<HloInstruction*>& ordering = schedule->instructions();
   TF_RETURN_IF_ERROR(computation->AcceptOrdered(&emitter, ordering));
-  TF_RET_CHECK(succeeded(mlir::verify(module)));
-  return Status::OK();
+  TF_RETURN_IF_ERROR(status_handler.ConsumeStatus());
+
+  (void)mlir::verify(module);
+  return status_handler.ConsumeStatus();
 }
 
 OwningModuleRef HloTextToLhloTranslateFunction(llvm::StringRef input,

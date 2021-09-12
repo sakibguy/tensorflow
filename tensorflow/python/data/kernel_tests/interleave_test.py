@@ -285,7 +285,7 @@ class InterleaveTest(test_base.DatasetTestBase, parameterized.TestCase):
             lambda x: dataset_ops.Dataset.from_tensors(x).repeat(x),
             cycle_length, block_length, num_parallel_calls)
     options = options_lib.Options()
-    options.experimental_deterministic = False
+    options.deterministic = False
     dataset = dataset.with_options(options)
     expected_output = [
         element for element in _interleave(
@@ -351,11 +351,23 @@ class InterleaveTest(test_base.DatasetTestBase, parameterized.TestCase):
           num_parallel_calls=10,
           deterministic=local_determinism)
       opts = options_lib.Options()
-      opts.experimental_deterministic = global_determinism
+      opts.deterministic = global_determinism
       dataset = dataset.with_options(opts)
       return dataset
 
     self.checkDeterminism(dataset_fn, expect_determinism, elements)
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(num_parallel_calls=[None, 1])))
+  def testName(self, num_parallel_calls):
+
+    def fn(x):
+      return dataset_ops.Dataset.from_tensors(x)
+
+    dataset = dataset_ops.Dataset.from_tensors(42).interleave(
+        fn, num_parallel_calls=num_parallel_calls, name="interleave")
+    self.assertDatasetProduces(dataset, [42])
 
 
 class InterleaveDatasetCheckpointTest(checkpoint_test_base.CheckpointTestBase,
