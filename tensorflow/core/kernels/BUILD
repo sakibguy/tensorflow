@@ -78,7 +78,7 @@ load(
 #   # for CPU tests
 #   $ bazel test --config opt //third_party/tensorflow/core/kernels:my_op_test
 #   # for GPU benchmarks
-#   $ bazel run --config opt --config=cuda //third_party/tensorflow/core/kernels:my_op_test_gpu -- --benchmarks=..
+#   $ bazel run --config opt --config=cuda //third_party/tensorflow/core/kernels:my_op_test_gpu -- --benchmark_filter=..
 #
 package(
     default_visibility = ["//visibility:public"],
@@ -1341,8 +1341,10 @@ tf_kernel_library(
         "where_op_gpu_impl_7.cu.cc",
         "where_op_gpu_impl_8.cu.cc",
     ],
-    deps = if_cuda_or_rocm([
+    deps = if_cuda([
                "//tensorflow/core/util:cuda_solvers",
+           ]) + if_rocm([
+               "//tensorflow/core/util:rocm_solvers",
            ]) + [":gpu_prim_hdrs"] +
            ARRAY_DEPS,
 )
@@ -3357,6 +3359,19 @@ tf_cc_test(
     ],
 )
 
+tf_cc_test(
+    name = "lookup_ops_test",
+    size = "small",
+    srcs = ["lookup_ops_test.cc"],
+    deps = [
+        ":lookup_table_op",
+        ":ops_testutil",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ],
+)
+
 MATH_DEPS = [
     ":fill_functor",
     "//tensorflow/core:core_cpu",
@@ -3558,7 +3573,10 @@ tf_kernel_library(
         "//tensorflow/core/util:determinism_for_kernels",
     ] + if_cuda_or_rocm([
         ":gpu_prim_helpers",
+    ]) + if_cuda([
         "//tensorflow/core/util:cuda_solvers",
+    ]) + if_rocm([
+        "//tensorflow/core/util:rocm_solvers",
     ]),
 )
 
@@ -4016,6 +4034,7 @@ tf_kernel_library(
         ":ops_util",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
+        "//tensorflow/core/util:determinism_for_kernels",
         "//tensorflow/core:lib",
         "//tensorflow/core/framework:bounds_check",
     ] + if_cuda([
@@ -6188,6 +6207,7 @@ filegroup(
         "sparse_xent_op.h",
         "sparse_fill_empty_rows_op.h",
         "sparse_reorder_op.h",
+        "sparse_slice_op.h",
         "sparse_tensor_dense_matmul_op.h",
         "string_util.h",
         "string_to_hash_bucket_op.h",
