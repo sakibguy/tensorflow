@@ -70,33 +70,29 @@ static llvm::Expected<tfrt::gpu::GpuModule> ModuleLoad(
   auto module = tfrt::gpu::wrapper::ModuleLoadData(*current, blob.data());
   if (!module) return module.takeError();
 
+  // Resolve constants.
+  for (const auto& constant : gpu_module_data->constants) {
+    if (constant.content.empty()) continue;
+
+    auto global = tfrt::gpu::wrapper::ModuleGetGlobal(
+        module->get(), constant.symbol_name.data());
+    if (!global) return global.takeError();
+
+    const void* constant_content =
+        static_cast<const void*>(constant.content.data());
+    tfrt::gpu::GpuPointer constant_content_ptr(
+        const_cast<void*>(constant_content), current->platform());
+
+    if (auto error = tfrt::gpu::wrapper::MemcpyAsync(
+            *current, global->base, constant_content_ptr, global->size_bytes,
+            tfrt::gpu::wrapper::Stream(nullptr, current->platform()))) {
+      return error;
+    }
+  }
   return tfrt::gpu::GpuModule(context.ValueRef(), std::move(*module));
 }
 
-// TODO(hanbinyoon): Expose this in ccl_wrapper.h.
-static llvm::Expected<int> ToWidthInBytes(ncclDataType_t data_type) {
-  switch (data_type) {
-    case ncclInt8:
-    case ncclUint8:
-      return 1;
-    case ncclFloat16:
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-    case ncclBfloat16:
-#endif
-      return 2;
-    case ncclInt32:
-    case ncclUint32:
-    case ncclFloat32:
-      return 4;
-    case ncclInt64:
-    case ncclUint64:
-    case ncclFloat64:
-      return 8;
-    default:
-      return tfrt::MakeStringError("Unknown ncclDataType_t: ", data_type);
-  }
-}
-
+#if XLA_ENABLE_XCCL
 static tfrt::AsyncValueRef<tfrt::gpu::GpuCclHandle> CclCreate(
     tfrt::Argument<tfrt::gpu::GpuContext> context,
     const tfrt::ExecutionContext& exec_ctx) {
@@ -142,7 +138,7 @@ static tfrt::AsyncValueRef<tfrt::Chain> CclCollectivePermute(
       xccl_ctx->collective_permute_source_target.target_peer;
 
   auto type = static_cast<ncclDataType_t>(*data_type);
-  auto width = ToWidthInBytes(type);
+  auto width = tfrt::gpu::wrapper::GetCclDataTypeSizeBytes(type);
   if (!width)
     return tfrt::MakeErrorAsyncValueRef(llvm::toString(width.takeError()));
   assert(*width != 0);
@@ -182,6 +178,7 @@ static tfrt::AsyncValueRef<tfrt::Chain> CclCollectivePermute(
 
   return tfrt::MakeAvailableAsyncValueRef<tfrt::Chain>();
 }
+#endif  // XLA_ENABLE_XCCL
 
 static llvm::Error CustomCall(
     const tfrt::gpu::GpuStream& stream, tfrt::Chain chain,
@@ -198,7 +195,7 @@ static llvm::Error CustomCall(
     return tfrt::MakeStringError("Failed to get CustomCallContext.");
   }
 
-  auto current = tfrt::gpu::wrapper::CtxSetCurrent(stream.context());
+  auto current = tfrt::gpu::wrapper::CtxSetCurrent(stream.context()->get());
   if (!current) {
     return tfrt::MakeStringError(llvm::toString(current.takeError()));
   }
@@ -239,11 +236,13 @@ static llvm::Error CustomCall(
 
 static void RegisterXlirKernels(tfrt::KernelRegistry* kernel_reg) {
   kernel_reg->AddKernel("xlir.module.load", TFRT_KERNEL(ModuleLoad));
+  kernel_reg->AddKernel("xlir.custom_call",
+                        TFRT_KERNEL_WITH_CHAIN_RESULT(CustomCall));
+#if XLA_ENABLE_XCCL
   kernel_reg->AddKernel("xlir.ccl.create", TFRT_KERNEL(CclCreate));
   kernel_reg->AddKernel("xlir.ccl.collective_permute",
                         TFRT_KERNEL(CclCollectivePermute));
-  kernel_reg->AddKernel("xlir.custom_call",
-                        TFRT_KERNEL_WITH_CHAIN_RESULT(CustomCall));
+#endif  // XLA_ENABLE_XCCL
 }
 
 TFRT_STATIC_KERNEL_REGISTRATION(RegisterXlirKernels);

@@ -14,10 +14,6 @@
 # ==============================================================================
 """AutomaticControlDependencies and related functionality."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import enum
 
@@ -107,8 +103,8 @@ _ORDER_INSENSITIVE_STATEFUL_OPS = [
     "CudnnRNNBackpropV2", "CudnnRNNBackpropV3",
     "EnqueueTPUEmbeddingSparseBatch", "EnqueueTPUEmbeddingIntegerBatch",
     "EnqueueTPUEmbeddingSparseTensorBatch",
-    "EnqueueTPUEmbeddingRaggedTensorBatch", "RestoreV2", "SaveV2"
-]
+    "EnqueueTPUEmbeddingRaggedTensorBatch", "RestoreV2", "SaveV2",
+    "InfeedEnqueue", "InfeedEnqueueTuple"]
 # LINT.ThenChange(//tensorflow/core/grappler/optimizers/function_optimizer.cc)
 
 _ALL_DENYLISTED_OPS = (

@@ -1,3 +1,43 @@
+# Release 2.8.0
+
+<INSERT SMALL BLURB ABOUT RELEASE FOCUS AREA AND POTENTIAL TOOLCHAIN CHANGES>
+
+# Breaking Changes
+
+*<DOCUMENT BREAKING CHANGES HERE>
+*<THIS SECTION SHOULD CONTAIN API, ABI AND BEHAVIORAL BREAKING CHANGES>
+
+# Known Caveats
+
+*<CAVEATS REGARDING THE RELEASE (BUT NOT BREAKING CHANGES).>
+*<ADDING/BUMPING DEPENDENCIES SHOULD GO HERE>
+*<KNOWN LACK OF SUPPORT ON SOME PLATFORM, SHOULD GO HERE>
+
+# Major Features and Improvements
+* `tf.lite`:
+  * Where operation support is added for these data types
+    'int32/uint32/int8/uint8/int64'
+  * Add builtin support for `Bucketize` op on CPU.
+
+*<INSERT MAJOR FEATURE HERE, USING MARKDOWN SYNTAX>
+*<IF RELEASE CONTAINS MULTIPLE FEATURES FROM SAME AREA, GROUP THEM TOGETHER>
+
+# Bug Fixes and Other Changes
+
+*<SIMILAR TO ABOVE SECTION, BUT FOR OTHER IMPORTANT CHANGES / BUG FIXES>
+*<IF A CHANGE CLOSES A GITHUB ISSUE, IT SHOULD BE DOCUMENTED HERE>
+*<NOTES SHOULD BE GROUPED PER AREA>
+* `tf.lite`:
+  * GPU
+    * Adds GPU Delegation support for serialization to Java API. This boosts
+      initialization time upto 90% when OpenCL is available.
+
+# Thanks to our Contributors
+
+This release contains contributions from many people at Google, as well as:
+
+<INSERT>, <NAME>, <HERE>, <USING>, <GITHUB>, <HANDLE>
+
 # Release 2.7.0
 
 <INSERT SMALL BLURB ABOUT RELEASE FOCUS AREA AND POTENTIAL TOOLCHAIN CHANGES>
@@ -214,8 +254,11 @@
       functional control flow op lowering optimization. This is useful when
       executing within a portable runtime where control flow op kernels may not
       be loaded due to selective registration.
-    * Added a new experimental argument `experimental_is_anonymous` to
-      `tf.lookup.StaticHashTable.__init__` to create the table in anonymous
+    * Added a new experimental argument `experimental_is_anonymous` to the
+      `__init__` function of `tf.lookup.StaticHashTable`,
+      `tf.lookup.StaticVocabularyTable`,
+      `tf.lookup.experimental.MutableHashTable` and
+      `tf.lookup.experimental.DenseHashTable`, to create the table in anonymous
       mode. In this mode, the table resource can only be accessed via resource
       handles (not resource names) and will be deleted automatically when all
       resource handles pointing to it are gone.
@@ -246,6 +289,8 @@
         endpoint.
 *   TF SavedModel:
     *   Custom gradients are now saved by default. See `tf.saved_model.SaveOptions` to disable this.
+    *   The saved_model_cli's `--input_examples` inputs are now restricted to
+        python literals to avoid code injection.
 *   XLA:
     * Added a new API that allows custom call functions to signal errors. The
       old API will be deprecated in a future release. See
@@ -257,6 +302,10 @@
     *   When saving a model, not specifying a namespace whitelist for custom
         ops with a namespace will now default to allowing rather than rejecting
         them all.
+*   `tf.distribute.TPUStrategy`:
+    * Added a new constructor option `experimental_spmd_xla_partitioning` to
+      enable SPMD (Single Program Multiple Data) support for spatial
+      partitioning. See https://www.tensorflow.org/api_docs/python/tf/distribute/TPUStrategy#experimental_split_to_logical_devices.
 
 ## Thanks to our Contributors
 

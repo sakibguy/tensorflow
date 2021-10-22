@@ -1553,6 +1553,21 @@ int64_t ComputeNonRootUsers(const HloInstruction* instr) {
   return non_root_users;
 }
 
+// Only pass through sharding annotation at the first iteration when:
+//  1. Operand is sharded;  2. Only non-concat dim is sharded;
+//  3. Concat is for params in the repeated layers which follows the
+//     pattern of param/gte -> reshape -> concat.
+bool AggressiveConcatOperandShardingCanPassThrough(
+    const HloInstruction* concat_operand) {
+  return (
+      IsSpatiallyPartitioned(concat_operand) &&
+      (concat_operand->has_sharding() &&
+       concat_operand->sharding().NumTiles() > 1) &&
+      concat_operand->opcode() == HloOpcode::kReshape &&
+      (concat_operand->operand(0)->opcode() == HloOpcode::kParameter ||
+       concat_operand->operand(0)->opcode() == HloOpcode::kGetTupleElement));
+}
+
 // DyanmicSlice or DynamicUpdateSlice handling for InferShardingFromOperands().
 bool InferDynamicSliceOrDynamicUpdateSliceShardingFromOperands(
     HloInstruction* instruction, int64_t aggressiveness,
@@ -1871,14 +1886,18 @@ bool ShardingPropagation::InferShardingFromOperands(
         return false;
       }
 
-      // Do not pass through sharding annotation at the first iteration
-      // if concat dim is sharded.
-      if (aggressiveness == 0 && operand->sharding().NumTiles() > 1) {
-        const auto& tile_assignment = operand->sharding().tile_assignment();
-        for (int64_t i = 0; i < instruction->shape().rank(); ++i) {
-          if (absl::c_linear_search(instruction->dimensions(), i) &&
-              tile_assignment.dim(i) > 1) {
+      if (aggressiveness == 0) {
+        for (const HloInstruction* concat_operand : instruction->operands()) {
+          if (!AggressiveConcatOperandShardingCanPassThrough(concat_operand)) {
             return false;
+          }
+          const auto& tile_assignment =
+              concat_operand->sharding().tile_assignment();
+          for (int64_t i = 0; i < instruction->shape().rank(); ++i) {
+            if (absl::c_linear_search(instruction->dimensions(), i) &&
+                tile_assignment.dim(i) > 1) {
+              return false;
+            }
           }
         }
       }
@@ -2069,7 +2088,8 @@ bool ShardingPropagation::InferShardingFromOperands(
                   instruction->operand(0)->sharding(), operand_parallel_dims);
           auto maybe_from_data =
               hlo_sharding_util::GatherOutputShardingFromDataOperand(
-                  filtered_operand_sharding, *instruction, instruction->shape(),
+                  filtered_operand_sharding, *instruction,
+                  instruction->gather_slice_sizes(), instruction->shape(),
                   instruction->operand(0)->shape());
           if (maybe_from_data) {
             changed |= MaybeImproveInstructionSharding(
@@ -2181,7 +2201,9 @@ StatusOr<bool> ShardingPropagation::Run(HloModule* module) {
           inst->while_condition()->parameter_instruction(0)};
     } else if (inst->opcode() == HloOpcode::kConditional) {
       std::vector<HloInstruction*> comps{inst};
-      for (HloComputation* c : inst->called_computations()) {
+      const auto& called_computations = inst->called_computations();
+      comps.reserve(called_computations.size());
+      for (HloComputation* c : called_computations) {
         comps.push_back(c->root_instruction());
       }
       return comps;

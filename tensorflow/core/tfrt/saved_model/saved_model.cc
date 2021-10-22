@@ -376,7 +376,8 @@ std::vector<std::string> FindNamesForValidSignatures(
 StatusOr<mlir::OwningModuleRef> ImportSavedModel(
     mlir::MLIRContext* context, const tensorflow::MetaGraphDef& meta_graph_def,
     const tensorflow::tfrt_stub::FallbackState& fallback_state,
-    std::string saved_model_dir, bool import_user_signatures) {
+    std::string saved_model_dir, bool import_user_signatures,
+    bool run_placer_grappler_on_functions) {
   std::vector<std::string> signature_names;
   if (import_user_signatures) {
     signature_names = FindNamesForValidSignatures(meta_graph_def);
@@ -394,7 +395,8 @@ StatusOr<mlir::OwningModuleRef> ImportSavedModel(
   TF_ASSIGN_OR_RETURN(
       auto import_input,
       tensorflow::tfrt_stub::TfrtSavedModelMLIRImportInput::Create(
-          fallback_state, &meta_graph_def, /*debug_info=*/{}));
+          fallback_state, &meta_graph_def, /*debug_info=*/{},
+          run_placer_grappler_on_functions));
 
   TF_ASSIGN_OR_RETURN(
       auto module,
@@ -430,20 +432,6 @@ StatusOr<InitializersAndSignatures> GetInitializersAndSignatures(
     result.initializers.push_back(session_initializer_name.str());
   }
   return result;
-}
-
-StatusOr<RCReference<tfrt::BEFFile>> OpenBefFile(
-    const SavedModel::Options& options, const tfrt::BefBuffer& bef) {
-  DCHECK(options.runtime);
-  auto* core_runtime = options.runtime->core_runtime();
-  DCHECK(core_runtime);
-  auto* host_context = core_runtime->GetHostContext();
-  DCHECK(host_context);
-  auto bef_file =
-      BEFFile::Open(bef, host_context->GetKernelRegistry(),
-                    host_context->diag_handler(), host_context->allocator());
-  TF_RET_CHECK(bef_file) << "failed to open BEF";
-  return bef_file;
 }
 
 tensorflow::Status InitSavedModel(
@@ -551,6 +539,8 @@ std::unique_ptr<SavedModel> SavedModelImpl::LoadSavedModel(
           tensorflow::TfrtTpuInfraTarget::kTpurt;
     }
   }
+  LOG(INFO) << "TFRT Savedmodel use TPU target "
+            << options.compile_options.tpu_target;
 
   auto statusor_saved_model =
       [&]() -> tensorflow::StatusOr<std::unique_ptr<SavedModel>> {
@@ -578,7 +568,8 @@ std::unique_ptr<SavedModel> SavedModelImpl::LoadSavedModel(
         ImportSavedModel(
             &context, meta_graph_def, *fallback_state,
             std::string(saved_model_dir),
-            /*import_user_signatures=*/!options.enable_lazy_loading));
+            /*import_user_signatures=*/!options.enable_lazy_loading,
+            options.run_placer_grappler_on_functions));
 
     auto import_duration = absl::Now() - import_start_time;
     saved_model_import_time_seconds->GetCell(std::string(saved_model_dir))
@@ -610,7 +601,8 @@ std::unique_ptr<SavedModel> SavedModelImpl::LoadSavedModel(
 
     // Step 3: Initialize runtime states using special BEF functions.
     auto init_start_time = absl::Now();
-    TF_ASSIGN_OR_RETURN(auto bef_file, OpenBefFile(options, bef));
+    TF_ASSIGN_OR_RETURN(auto bef_file,
+                        CreateBefFileFromBefBuffer(*options.runtime, bef));
 
     auto tpu_model_resource = std::make_unique<tpu::TpuModelResource>();
     auto resource_context =
@@ -629,7 +621,8 @@ std::unique_ptr<SavedModel> SavedModelImpl::LoadSavedModel(
     TF_ASSIGN_OR_RETURN(
         auto graph_execution_state,
         tensorflow::tfrt_stub::TfrtGraphExecutionState::Create(
-            std::move(*meta_graph_def.mutable_graph_def()), *fallback_state));
+            std::move(*meta_graph_def.mutable_graph_def()), *fallback_state,
+            options.run_placer_grappler_on_functions));
 
     // Finally, create the saved model.
     return {std::make_unique<SavedModelImpl>(
@@ -1116,8 +1109,9 @@ SavedModelImpl::LoadJoinedSignature(const JoinedSignature& joined_signature) {
       options_.compile_options, module.get(), &loading_result->bef));
 
   // Step 3: Initialize runtime states using special BEF functions.
-  TF_ASSIGN_OR_RETURN(loading_result->bef_file,
-                      OpenBefFile(options_, loading_result->bef));
+  TF_ASSIGN_OR_RETURN(
+      loading_result->bef_file,
+      CreateBefFileFromBefBuffer(*options_.runtime, loading_result->bef));
   TF_RETURN_IF_ERROR(RunInitializers(
       /*initializers_and_signatures=*/{}, options_.model_metadata,
       loading_result->bef_file.get(), *options_.runtime,

@@ -446,7 +446,7 @@ static void ExecuteImpl(Executable& executable,
   for (auto& t : operands)
     ctx->tensor_operands.insert({t.tensor().data(), &t.tensor()});
 
-  // Tensorflow -> CPURT only supportes returning Memrefs as Tensors.
+  // Tensorflow -> CPURT only supports returning Memrefs as Tensors.
   TensorflowReturnValueConverter converter(results, std::move(ctx));
   converter.AddConversion(ReturnAsyncStridedMemref<ConvertTensor>);
   converter.AddConversion(ReturnStridedMemref<ConvertTensor>);
@@ -460,6 +460,8 @@ static void ExecuteImpl(Executable& executable,
   // Override async runtime worker threads with fallback Eigen thread pool.
   Executable::ExecuteOpts opts;
   opts.async_runtime_worker_threads = *worker_threads;
+  // Pass kernel context pointer to be emitted in the compiled function.
+  opts.kernel_context = &converter.context();
 
   // Error propagation happens in the result converter.
   if (auto err = executable.Execute(memrefs, converter, exec_ctx, opts)) return;
@@ -486,15 +488,17 @@ static void ExecuteImpl(JitExecutable& jit_executable,
   // Get an executable that might be specialized to the operands.
   DebugListener debug_listener;
 
-  AsyncValuePtr<Executable> executable = jit_executable.GetExecutable(
+  Expected<AsyncValuePtr<Executable>> executable = jit_executable.GetExecutable(
       memrefs, exec_ctx, debug ? &debug_listener : nullptr);
+  if (auto err = executable.takeError())
+    return EmitErrors(results, std::move(err), exec_ctx);
 
   // If executable is available execute it inline.
-  if (executable.IsAvailable()) {
-    if (executable.IsError()) {
-      EmitErrors(results, executable.GetError(), exec_ctx);
+  if (executable->IsAvailable()) {
+    if (executable->IsError()) {
+      EmitErrors(results, executable->GetError(), exec_ctx);
     } else {
-      ExecuteImpl(executable.get(), memrefs, operands, results, exec_ctx);
+      ExecuteImpl(executable->get(), memrefs, operands, results, exec_ctx);
     }
     return;
   }
@@ -509,9 +513,10 @@ static void ExecuteImpl(JitExecutable& jit_executable,
     results.AllocateIndirectResultAt(i);
 
   // Call executable when it's ready with the original operands.
-  executable.AndThen([exec_ctx, executable, memrefs = std::move(memrefs),
-                      r = RCArray<AsyncValue>(results.values()),
-                      o = RCArray<AsyncValue>(operands.values())] {
+  executable->AndThen([exec_ctx, executable = *executable,
+                       memrefs = std::move(memrefs),
+                       r = RCArray<AsyncValue>(results.values()),
+                       o = RCArray<AsyncValue>(operands.values())] {
     // Allocate storage for the executable results.
     llvm::SmallVector<RCReference<AsyncValue>> results_storage;
     results_storage.resize(r.size());

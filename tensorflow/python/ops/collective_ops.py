@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """TensorFlow collective Ops."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.ops import gen_collective_ops
 
 
@@ -396,12 +392,12 @@ def initialize_communicator(group_key,
   """Initializes a collective communicator.
 
   This creates a collective communicator, which represents membership to a
-  collective group. It should be called once per member of the group, and each
-  member needs to be on a different device. It blocks until all members of the
-  group run this op.
+  collective group identified by the group_key. It should be called once per
+  member of the group, and each member needs to be on a different device.
+  It blocks until all members of the group run this op.
 
   Communicators of a group can only be initialized once. Trying to initialize
-  communicators of an existing group will result in an error.
+  communicators for an existing group key will result in an error.
 
   Args:
     group_key: an int32 `tf.Tensor` identifying the group.
